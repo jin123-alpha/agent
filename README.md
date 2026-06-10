@@ -156,7 +156,7 @@ TOOLS = [
 - `base_url`：OpenAI 兼容接口地址；为空字符串或 `null` 时使用 OpenAI SDK 默认官方地址。
 - `api_key`：接口密钥。
 - `model`：模型名称。
-- `stream`：是否使用流式输出，`true` 开启，`false` 关闭。
+- `stream`：是否使用流式输出，`true` 开启，`false` 关闭。由于工具调用是通过普通 JSON 文本识别的，工具决策阶段会先静默缓冲，最终答案会流式输出。
 
 如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认 Ollama 配置：
 

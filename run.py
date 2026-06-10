@@ -97,7 +97,7 @@ def build_system_prompt() -> str:
 """
 
 
-def ask_model(messages):
+def ask_model(messages, stream_output: bool = False):
     request_options = {
         "model": MODEL,
         "messages": messages,
@@ -117,18 +117,65 @@ def ask_model(messages):
     for chunk in chunks:
         delta = chunk.choices[0].delta.content
         if delta:
-            print(delta, end="", flush=True)
+            if stream_output:
+                print(delta, end="", flush=True)
             content_parts.append(delta)
 
-    print()
+    if stream_output:
+        print()
     return "".join(content_parts)
 
 
+def stream_final_answer(final_answer: str) -> str:
+    if not STREAM:
+        return final_answer
+
+    messages = [
+        {
+            "role": "system",
+            "content": "你只负责把给定的最终答案原样输出给用户，不要添加解释，不要输出 JSON。",
+        },
+        {
+            "role": "user",
+            "content": final_answer,
+        },
+    ]
+    ask_model(messages, stream_output=True)
+    return ""
+
+
 def parse_tool_action(answer: str):
-    try:
-        action = json.loads(answer)
-    except json.JSONDecodeError:
-        return None
+    action = parse_json_action(answer)
+
+    if action is not None:
+        return action
+
+    decoder = json.JSONDecoder()
+
+    for index, char in enumerate(answer):
+        if char != "{":
+            continue
+
+        try:
+            candidate, _ = decoder.raw_decode(answer[index:])
+        except json.JSONDecodeError:
+            continue
+
+        action = parse_json_action(candidate)
+        if action is not None:
+            return action
+
+    return None
+
+
+def parse_json_action(answer):
+    if isinstance(answer, dict):
+        action = answer
+    else:
+        try:
+            action = json.loads(answer)
+        except (TypeError, json.JSONDecodeError):
+            return None
 
     if not isinstance(action, dict):
         return None
@@ -159,7 +206,7 @@ def run_agent(user_input: str, max_tool_calls: int = 10):
         action = parse_tool_action(answer)
 
         if action is None:
-            return answer
+            return stream_final_answer(answer)
 
         tool_name = action["tool"]
         arguments = action["arguments"]
@@ -186,8 +233,11 @@ def run_agent(user_input: str, max_tool_calls: int = 10):
         "role": "user",
         "content": "工具调用次数已达到上限。请基于已有信息给出最终回答。",
     })
-    return ask_model(messages)
+    final_answer = ask_model(messages, stream_output=STREAM)
+    return "" if STREAM else final_answer
 
 
 if __name__ == "__main__":
-    print(run_agent("验证guess_game.py能否正常运行"))
+    result = run_agent("检查本地目录，告诉我写了一个什么项目")
+    if result:
+        print(result,end='',flush=STREAM)
