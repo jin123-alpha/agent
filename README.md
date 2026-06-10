@@ -8,7 +8,6 @@
 agent/
 |-- config.json             # 模型配置：base_url、api_key、model、stream
 |-- run.py                  # 项目入口：调用模型、解析工具 JSON、多轮执行工具
-|-- test.py                 # 兼容入口：直接复用 run_agent
 |-- tools/
 |   |-- __init__.py         # 工具注册表：TOOLS 和 TOOL_MAP
 |   |-- code_tools.py       # 文件结构、读文件、创建文件、编辑文件、编译检查
