@@ -1,5 +1,6 @@
 from .code_tools import compile_python_files, create_file, edit_code_file, list_workspace_files, read_code_file
 from .math_tools import add
+from .memory_tools import forget_memory, recall_memory, remember
 from .security_tools import generate_runtime_secret
 from .web_tools import web_search
 
@@ -7,6 +8,9 @@ from .web_tools import web_search
 TOOLS = [
     add,
     generate_runtime_secret,
+    remember,
+    recall_memory,
+    forget_memory,
     read_code_file,
     list_workspace_files,
     create_file,

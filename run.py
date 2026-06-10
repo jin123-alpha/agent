@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from tools import TOOL_MAP, TOOLS
+from tools.memory_tools import format_memory_for_prompt
 
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
@@ -84,12 +85,22 @@ def format_tool_description(tool) -> str:
 def build_system_prompt() -> str:
     tool_descriptions = "\n".join(format_tool_description(tool) for tool in TOOLS)
     tool_names = ", ".join(tool.__name__ for tool in TOOLS)
+    memory_context = format_memory_for_prompt()
 
     return f"""
 你是一个简单 Agent。
 
+当前长期记忆：
+{memory_context}
+
 你可以使用工具：
 {tool_descriptions}
+
+记忆使用规则：
+- 当用户明确要求你记住某个偏好、事实、项目约定或长期指令时，调用 remember。
+- 当用户询问以前记住了什么，或当前问题可能依赖长期记忆时，调用 recall_memory。
+- 当用户要求忘记某条记忆时，先查找对应记忆，再调用 forget_memory。
+- 不要把密码、API key、访问令牌等敏感秘密写入长期记忆。
 
 如果需要调用工具，只输出 JSON，不要输出其他文字：
 {{"tool": "工具名", "arguments": {{"参数名": "参数值"}}}}
@@ -271,7 +282,7 @@ def run_agent(user_input: str, max_tool_calls: int = 10):
 
 
 if __name__ == "__main__":
-    result = run_agent("解读当前目录的文件结构")
+    result = run_agent("解读当前目录的文件结构并记下")
 
     if result:
         print(result)

@@ -7,11 +7,14 @@
 ```text
 agent/
 |-- config.json             # 模型配置：base_url、api_key、model、stream
+|-- data/
+|   `-- memory.json         # 本地长期记忆文件，默认被 .gitignore 忽略
 |-- run.py                  # 项目入口：调用模型、解析工具 JSON、多轮执行工具
 |-- tools/
 |   |-- __init__.py         # 工具注册表：TOOLS 和 TOOL_MAP
 |   |-- code_tools.py       # 文件结构、读文件、创建文件、编辑文件、编译检查
 |   |-- math_tools.py       # 数学工具
+|   |-- memory_tools.py     # 长期记忆工具
 |   |-- security_tools.py   # 随机密钥工具
 |   `-- web_tools.py        # 网络搜索和网页正文抓取工具
 `-- README.md
@@ -55,6 +58,30 @@ python run.py
 
 ```json
 {"tool": "generate_runtime_secret", "arguments": {"length": 32}}
+```
+
+### `remember`
+
+保存一条长期记忆，适合记录用户明确要求记住的偏好、事实、项目约定或长期指令。记忆存储在 `data/memory.json`，默认不会提交到 Git。
+
+```json
+{"tool": "remember", "arguments": {"content": "用户喜欢简洁的中文回答", "category": "preference"}}
+```
+
+### `recall_memory`
+
+查询长期记忆。`query` 为空时返回最近记忆，可按 `category` 精确过滤。
+
+```json
+{"tool": "recall_memory", "arguments": {"query": "中文回答", "category": "preference", "max_results": 5}}
+```
+
+### `forget_memory`
+
+根据记忆 id 删除一条长期记忆。删除前可先调用 `recall_memory` 查找 id。
+
+```json
+{"tool": "forget_memory", "arguments": {"memory_id": "abc123def456"}}
 ```
 
 ### `list_workspace_files`
@@ -137,6 +164,17 @@ TOOLS = [
 ```
 
 `run.py` 会自动读取函数签名和 docstring，生成 system prompt，并自动构造工具分发映射。
+
+## 长期记忆
+
+每次调用 `run_agent()` 时，程序会读取 `data/memory.json`，把最近的长期记忆注入 system prompt。模型也可以通过工具管理记忆：
+
+- 用户明确说“记住……”时，模型应调用 `remember`。
+- 用户问“你记得什么……”或问题依赖历史偏好时，模型可调用 `recall_memory`。
+- 用户要求忘记某条记忆时，模型应先查询 id，再调用 `forget_memory`。
+- 密码、API key、访问令牌等敏感秘密不应写入长期记忆。
+
+记忆文件是普通 JSON 数组。每条记忆包含 `id`、`category`、`content`、`created_at` 和 `updated_at` 字段。
 
 ## 模型配置
 
