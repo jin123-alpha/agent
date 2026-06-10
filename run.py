@@ -1,12 +1,14 @@
 import inspect
 import json
+import os
 
 from tools import TOOL_MAP, TOOLS
 
 
-BASE_URL = "http://10.6.22.1:11434/v1"
-API_KEY = "ollama"
-MODEL = "qwen3:8b"
+DEFAULT_BASE_URL = "http://10.6.22.1:11434/v1"
+BASE_URL = os.getenv("OPENAI_BASE_URL", DEFAULT_BASE_URL)
+API_KEY = os.getenv("OPENAI_API_KEY", "ollama")
+MODEL = os.getenv("OPENAI_MODEL", "qwen3:8b")
 
 client = None
 
@@ -17,10 +19,11 @@ def get_client():
     if client is None:
         from openai import OpenAI
 
-        client = OpenAI(
-            base_url=BASE_URL,
-            api_key=API_KEY,
-        )
+        client_options = {"api_key": API_KEY}
+        if BASE_URL:
+            client_options["base_url"] = BASE_URL
+
+        client = OpenAI(**client_options)
 
     return client
 

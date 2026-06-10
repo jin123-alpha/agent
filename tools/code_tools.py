@@ -62,6 +62,34 @@ def read_code_file(path: str, start_line: int = 1, end_line: int | None = None) 
     return "\n".join([header, *numbered_lines])
 
 
+def create_file(path: str, content: str = "", overwrite: bool = False, create_parent_dirs: bool = True) -> str:
+    """
+    create_file(path, content="", overwrite=False, create_parent_dirs=True)：在项目目录内创建文本文件；默认不覆盖已存在文件，可自动创建父目录。
+    """
+    try:
+        target = resolve_project_path(path)
+    except ValueError as exc:
+        return str(exc)
+
+    existed = target.exists()
+
+    if existed and target.is_dir():
+        return f"目标是目录，无法写入文件：{path}"
+
+    if existed and not overwrite:
+        return f"文件已存在：{path}。如需覆盖，请设置 overwrite=True。"
+
+    if create_parent_dirs:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    elif not target.parent.exists():
+        return f"父目录不存在：{target.parent.relative_to(PROJECT_ROOT)}"
+
+    target.write_text(content, encoding="utf-8")
+
+    action = "覆盖" if existed else "创建"
+    return f"已{action}文件：{path}，字符数：{len(content)}。"
+
+
 def edit_code_file(path: str, old_text: str, new_text: str, expected_replacements: int = 1) -> str:
     """
     edit_code_file(path, old_text, new_text, expected_replacements=1)：编辑项目内文本文件，将 old_text 精确替换为 new_text，默认要求只替换 1 处。
