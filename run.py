@@ -1,5 +1,9 @@
 import inspect
 import json
+import sys
+import time
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from tools import TOOL_MAP, TOOLS
@@ -7,9 +11,11 @@ from tools import TOOL_MAP, TOOLS
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 DEFAULT_CONFIG = {
-    "base_url": "http://10.6.22.1:11434/v1",
+    "base_url": "http://127.0.0.1:11434/v1",
     "api_key": "ollama",
     "model": "qwen3:8b",
+
+    # stream 只用于最终答案，不用于工具调用 JSON 判断
     "stream": False,
 }
 
@@ -97,51 +103,65 @@ def build_system_prompt() -> str:
 """
 
 
-def ask_model(messages, stream_output: bool = False):
+def ask_model(messages):
     request_options = {
         "model": MODEL,
         "messages": messages,
         "temperature": 0,
     }
 
-    if not STREAM:
-        response = get_client().chat.completions.create(**request_options)
-        return response.choices[0].message.content
-
-    chunks = get_client().chat.completions.create(
-        **request_options,
-        stream=True,
-    )
-    content_parts = []
-
-    for chunk in chunks:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            if stream_output:
-                print(delta, end="", flush=True)
-            content_parts.append(delta)
-
-    if stream_output:
-        print()
-    return "".join(content_parts)
+    response = get_client().chat.completions.create(**request_options)
+    return response.choices[0].message.content or ""
 
 
 def stream_final_answer(final_answer: str) -> str:
+    """
+    如果 STREAM=False：直接返回最终答案，由主程序 print。
+    如果 STREAM=True：用打字机效果输出最终答案，不再让模型复述一遍。
+    """
     if not STREAM:
         return final_answer
 
-    messages = [
-        {
-            "role": "system",
-            "content": "你只负责把给定的最终答案原样输出给用户，不要添加解释，不要输出 JSON。",
-        },
-        {
-            "role": "user",
-            "content": final_answer,
-        },
-    ]
-    ask_model(messages, stream_output=True)
+    for char in final_answer:
+        print(char, end="", flush=True)
+        time.sleep(0.01)
+
+    print()
     return ""
+
+
+def clear_current_line():
+    sys.stdout.write("\r" + " " * 80 + "\r")
+    sys.stdout.flush()
+
+
+@contextmanager
+def tool_loading_line(tool_name: str):
+    """
+    工具调用时，只显示一行动态提示，不显示工具参数和 JSON。
+    """
+    stop_event = threading.Event()
+
+    def animate():
+        frames = ["", ".", "..", "..."]
+        index = 0
+
+        while not stop_event.is_set():
+            frame = frames[index % len(frames)]
+            sys.stdout.write(f"\r正在调用工具 {tool_name}{frame}")
+            sys.stdout.flush()
+            index += 1
+            time.sleep(0.35)
+
+    thread = threading.Thread(target=animate, daemon=True)
+    thread.start()
+
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join(timeout=1)
+        clear_current_line()
 
 
 def parse_tool_action(answer: str):
@@ -179,7 +199,7 @@ def parse_json_action(answer):
 
     if not isinstance(action, dict):
         return None
-    
+
     if "tool" not in action or "arguments" not in action:
         return None
 
@@ -202,9 +222,14 @@ def run_agent(user_input: str, max_tool_calls: int = 10):
     ]
 
     for _ in range(max_tool_calls):
+        # 关键点：
+        # 这里不能 stream=True。
+        # 因为这一轮模型可能输出工具 JSON，如果流式输出，会把 JSON 暴露给用户。
         answer = ask_model(messages)
+
         action = parse_tool_action(answer)
 
+        # 没有工具调用，说明这是最终答案
         if action is None:
             return stream_final_answer(answer)
 
@@ -215,29 +240,38 @@ def run_agent(user_input: str, max_tool_calls: int = 10):
         if tool is None:
             return f"模型请求了未知工具：{tool_name}"
 
-        try:
-            tool_result = tool(**arguments)
-        except Exception as exc:
-            tool_result = f"工具执行失败：{exc}"
+        # 工具执行时，只显示一行动态提示
+        with tool_loading_line(tool_name):
+            try:
+                tool_result = tool(**arguments)
+            except Exception as exc:
+                tool_result = f"工具执行失败：{exc}"
 
+        # 不把工具细节打印给用户，只加入上下文给模型
         messages.append({
             "role": "assistant",
             "content": answer,
         })
         messages.append({
             "role": "user",
-            "content": f"工具 {tool_name} 执行结果是：{tool_result}。请判断是否还需要继续调用工具；如果不需要，请给出最终回答。",
+            "content": (
+                f"工具 {tool_name} 执行结果是：{tool_result}。\n"
+                f"请判断是否还需要继续调用工具；如果不需要，请给出最终回答。"
+            ),
         })
 
     messages.append({
         "role": "user",
         "content": "工具调用次数已达到上限。请基于已有信息给出最终回答。",
     })
-    final_answer = ask_model(messages, stream_output=STREAM)
-    return "" if STREAM else final_answer
+
+    # 达到上限后的最终回答可以流式输出
+    final_answer = ask_model(messages)
+    return stream_final_answer(final_answer)
 
 
 if __name__ == "__main__":
-    result = run_agent("检查本地目录，告诉我写了一个什么项目")
+    result = run_agent("解读当前目录的文件结构")
+
     if result:
-        print(result,end='',flush=STREAM)
+        print(result)
