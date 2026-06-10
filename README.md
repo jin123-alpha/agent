@@ -6,6 +6,7 @@
 
 ```text
 agent/
+|-- config.json             # 模型配置：base_url、api_key、model、stream
 |-- run.py                  # 项目入口：调用模型、解析工具 JSON、多轮执行工具
 |-- test.py                 # 兼容入口：直接复用 run_agent
 |-- tools/
@@ -31,7 +32,7 @@ pip install openai
 python run.py
 ```
 
-`run_agent(user_input, max_tool_calls=8)` 会循环调用模型。模型如果返回普通文本，就直接结束；如果返回工具调用 JSON，就执行工具并把结果交还给模型，直到模型认为信息足够并给出最终回答。
+`run_agent(user_input, max_tool_calls=10)` 会循环调用模型。模型如果返回普通文本，就直接结束；如果返回工具调用 JSON，就执行工具并把结果交还给模型，直到模型认为信息足够并给出最终回答。
 
 工具调用 JSON 格式：
 
@@ -138,54 +139,61 @@ TOOLS = [
 
 `run.py` 会自动读取函数签名和 docstring，生成 system prompt，并自动构造工具分发映射。
 
-## 使用本地模型 API
+## 模型配置
 
-当前默认配置适合 Ollama 这类 OpenAI 兼容本地接口：
+模型配置在 `config.json` 中：
 
-```python
-DEFAULT_BASE_URL = "http://10.6.22.1:11434/v1"
-API_KEY = "ollama"
-MODEL = "qwen3:8b"
+```json
+{
+  "base_url": "https://api.deepseek.com",
+  "api_key": "ollama",
+  "model": "deepseek-v4-flash",
+  "stream": true
+}
 ```
 
-也可以用环境变量覆盖：
+字段说明：
 
-```bash
-export OPENAI_BASE_URL="http://10.6.22.1:11434/v1"
-export OPENAI_API_KEY="ollama"
-export OPENAI_MODEL="qwen3:8b"
-python run.py
+- `base_url`：OpenAI 兼容接口地址；为空字符串或 `null` 时使用 OpenAI SDK 默认官方地址。
+- `api_key`：接口密钥。
+- `model`：模型名称。
+- `stream`：是否使用流式输出，`true` 开启，`false` 关闭。
+
+如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认 Ollama 配置：
+
+```json
+{
+  "base_url": "http://10.6.22.1:11434/v1",
+  "api_key": "ollama",
+  "model": "qwen3:8b",
+  "stream": false
+}
+```
+
+## 使用本地模型 API
+
+本地 Ollama 或其它 OpenAI 兼容服务可以这样配置：
+
+```json
+{
+  "base_url": "http://10.6.22.1:11434/v1",
+  "api_key": "ollama",
+  "model": "qwen3:8b",
+  "stream": false
+}
 ```
 
 ## 改用 OpenAI 官方 API
 
-本项目使用 OpenAI Python SDK。要从本地 OpenAI 兼容接口切到 OpenAI 官方 API，需要让 SDK 使用默认官方 base URL，并提供真实 API key。如果有其它的API比如说Deepseek,也可以使用其openai接口，具体查看Deepseek官方文档。
+本项目使用 OpenAI Python SDK。要从本地 OpenAI 兼容接口切到 OpenAI 官方 API，把 `config.json` 改成：
 
-Linux/macOS：
-
-```bash
-export OPENAI_API_KEY="你的 OpenAI API key"
-export OPENAI_MODEL="你要使用的官方模型名"
-export OPENAI_BASE_URL=
-python run.py
+```json
+{
+  "base_url": "",
+  "api_key": "你的 OpenAI API key",
+  "model": "你要使用的官方模型名",
+  "stream": true
+}
 ```
 
-PowerShell：
-
-```powershell
-$env:OPENAI_API_KEY = "你的 OpenAI API key"
-$env:OPENAI_MODEL = "你要使用的官方模型名"
-$env:OPENAI_BASE_URL = ""
-python run.py
-```
-
-也可以直接修改 `run.py`：
-
-```python
-BASE_URL = ""
-API_KEY = "你的 OpenAI API key"
-MODEL = "你要使用的官方模型名"
-```
-
-当 `OPENAI_BASE_URL` 或 `BASE_URL` 为空字符串时，`OpenAI()` 会使用 SDK 默认的 OpenAI 官方 API 地址；当它有值时，会使用指定的兼容接口地址。
-
+当 `base_url` 为空字符串或 `null` 时，`OpenAI()` 会使用 SDK 默认的 OpenAI 官方 API 地址；当它有值时，会使用指定的兼容接口地址。其它兼容 OpenAI 协议的服务，例如 DeepSeek，也可以通过填写对应的 `base_url`、`api_key` 和 `model` 使用。

@@ -1,14 +1,55 @@
 import inspect
 import json
-import os
+from pathlib import Path
 
 from tools import TOOL_MAP, TOOLS
 
 
-DEFAULT_BASE_URL = "http://10.6.22.1:11434/v1"
-BASE_URL = os.getenv("OPENAI_BASE_URL", DEFAULT_BASE_URL)
-API_KEY = os.getenv("OPENAI_API_KEY", "ollama")
-MODEL = os.getenv("OPENAI_MODEL", "qwen3:8b")
+CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+DEFAULT_CONFIG = {
+    "base_url": "http://10.6.22.1:11434/v1",
+    "api_key": "ollama",
+    "model": "qwen3:8b",
+    "stream": False,
+}
+
+
+def load_config() -> dict:
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as file:
+            config = json.load(file)
+    except Exception:
+        return DEFAULT_CONFIG.copy()
+
+    if not isinstance(config, dict):
+        return DEFAULT_CONFIG.copy()
+
+    loaded_config = DEFAULT_CONFIG.copy()
+    loaded_config.update({
+        key: value
+        for key, value in config.items()
+        if key in loaded_config
+    })
+
+    loaded_config["stream"] = parse_bool(loaded_config["stream"])
+    return loaded_config
+
+
+def parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    return bool(value)
+
+
+CONFIG = load_config()
+BASE_URL = CONFIG["base_url"]
+API_KEY = CONFIG["api_key"]
+MODEL = CONFIG["model"]
+STREAM = CONFIG["stream"]
 
 client = None
 
@@ -57,12 +98,30 @@ def build_system_prompt() -> str:
 
 
 def ask_model(messages):
-    response = get_client().chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        temperature=0,
+    request_options = {
+        "model": MODEL,
+        "messages": messages,
+        "temperature": 0,
+    }
+
+    if not STREAM:
+        response = get_client().chat.completions.create(**request_options)
+        return response.choices[0].message.content
+
+    chunks = get_client().chat.completions.create(
+        **request_options,
+        stream=True,
     )
-    return response.choices[0].message.content
+    content_parts = []
+
+    for chunk in chunks:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            print(delta, end="", flush=True)
+            content_parts.append(delta)
+
+    print()
+    return "".join(content_parts)
 
 
 def parse_tool_action(answer: str):
@@ -73,7 +132,7 @@ def parse_tool_action(answer: str):
 
     if not isinstance(action, dict):
         return None
-
+    
     if "tool" not in action or "arguments" not in action:
         return None
 
@@ -83,7 +142,7 @@ def parse_tool_action(answer: str):
     return action
 
 
-def run_agent(user_input: str, max_tool_calls: int = 8):
+def run_agent(user_input: str, max_tool_calls: int = 10):
     messages = [
         {
             "role": "system",
@@ -131,4 +190,4 @@ def run_agent(user_input: str, max_tool_calls: int = 8):
 
 
 if __name__ == "__main__":
-    print(run_agent("如何寄送相机等高价值物品？"))
+    print(run_agent("验证guess_game.py能否正常运行"))
