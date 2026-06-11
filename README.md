@@ -1,15 +1,16 @@
 # Simple Tool Agent
 
-这是一个最小可扩展 Agent 项目。`run.py` 负责模型调用和工具循环，`tools/` 目录负责放置工具函数。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
+这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。`run.py` 负责构建 `StateGraph`，用模型节点和工具节点组成循环；`tools/` 目录负责放置工具函数。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
 
 ## 文件结构
 
 ```text
 agent/
-|-- config.json             # 模型配置：base_url、api_key、model、stream、native_tools
+|-- config.json             # 模型配置：base_url、api_key、model、stream
 |-- data/
 |   `-- memory.json         # 本地长期记忆文件，默认被 .gitignore 忽略
-|-- run.py                  # 项目入口：调用模型、解析工具 JSON、多轮执行工具
+|-- requirements.txt        # LangGraph / LangChain 依赖
+|-- run.py                  # 项目入口：构建 LangGraph、执行模型节点和工具节点
 |-- tools/
 |   |-- __init__.py         # 工具注册表：TOOLS 和 TOOL_MAP
 |   |-- code_tools.py       # 文件结构、读文件、创建文件、编辑文件、编译检查
@@ -22,10 +23,10 @@ agent/
 
 ## 运行
 
-先安装 OpenAI Python SDK：
+先安装依赖：
 
 ```bash
-pip install openai
+pip install -r requirements.txt
 ```
 
 然后运行：
@@ -34,13 +35,9 @@ pip install openai
 python run.py
 ```
 
-`run_agent(user_input, max_tool_calls=10)` 会循环调用模型。默认优先使用 OpenAI 兼容接口的原生 `tools/function calling`；如果接口不支持 `tools` 参数，会自动退回普通 JSON 工具调用模式。模型如果返回普通文本，就直接结束；如果请求工具调用，就执行工具并把结果交还给模型，直到模型认为信息足够并给出最终回答。
+`run_agent(user_input, max_tool_calls=10)` 会把用户输入放入 LangGraph 状态，然后在 `agent -> tools -> agent` 图中循环。模型通过 LangChain 的 `bind_tools()` 选择工具；工具执行结果会以 `ToolMessage` 返回给图，直到模型给出最终回答。
 
-兜底 JSON 工具调用格式：
-
-```json
-{"tool": "工具名", "arguments": {"参数名": "参数值"}}
-```
+当 `stream=true` 时，`run_agent()` 使用 LangGraph 的 `messages` stream mode 流式输出模型可见文本。
 
 ## 当前工具
 
@@ -163,7 +160,7 @@ TOOLS = [
 ]
 ```
 
-`tools/__init__.py` 会自动读取函数签名和 docstring，生成原生工具 schema，并构造工具分发映射。`run.py` 负责选择原生 tools 或 JSON 兜底协议并执行工具循环。
+`run.py` 会把 `TOOLS` 中的普通 Python 函数包装成 LangChain `StructuredTool`，并通过 `ChatOpenAI(...).bind_tools(...)` 交给模型。`tools/__init__.py` 只负责维护工具注册表和分发映射。
 
 ## 长期记忆
 
@@ -185,8 +182,7 @@ TOOLS = [
   "base_url": "https://api.deepseek.com",
   "api_key": "ollama",
   "model": "deepseek-v4-flash",
-  "stream": true,
-  "native_tools": true
+  "stream": true
 }
 ```
 
@@ -195,18 +191,16 @@ TOOLS = [
 - `base_url`：OpenAI 兼容接口地址；为空字符串或 `null` 时使用 OpenAI SDK 默认官方地址。
 - `api_key`：接口密钥。
 - `model`：模型名称。
-- `stream`：是否使用 API 真流式输出，`true` 开启，`false` 关闭。原生 tools 模式会流式输出普通文本并在后台拼接工具调用；JSON 兜底模式的工具决策轮仍会静默缓冲，避免把工具 JSON 暴露给用户。
-- `native_tools`：是否优先使用 OpenAI 兼容接口的原生 `tools/function calling`。如果开启后接口不支持，程序会自动退回 JSON 工具调用模式。
+- `stream`：是否使用 LangGraph `messages` stream mode 流式输出模型可见文本。
 
 如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认 Ollama 配置：
 
 ```json
 {
-  "base_url": "http://10.6.22.1:11434/v1",
+  "base_url": "http://127.0.0.1:11434/v1",
   "api_key": "ollama",
   "model": "qwen3:8b",
-  "stream": false,
-  "native_tools": true
+  "stream": false
 }
 ```
 
@@ -219,23 +213,21 @@ TOOLS = [
   "base_url": "http://10.6.22.1:11434/v1",
   "api_key": "ollama",
   "model": "qwen3:8b",
-  "stream": false,
-  "native_tools": true
+  "stream": false
 }
 ```
 
 ## 改用 OpenAI 官方 API
 
-本项目使用 OpenAI Python SDK。要从本地 OpenAI 兼容接口切到 OpenAI 官方 API，把 `config.json` 改成：
+本项目通过 `langchain-openai` 调用 OpenAI 兼容接口。要从本地 OpenAI 兼容接口切到 OpenAI 官方 API，把 `config.json` 改成：
 
 ```json
 {
   "base_url": "",
   "api_key": "你的 OpenAI API key",
   "model": "你要使用的官方模型名",
-  "stream": true,
-  "native_tools": true
+  "stream": true
 }
 ```
 
-当 `base_url` 为空字符串或 `null` 时，`OpenAI()` 会使用 SDK 默认的 OpenAI 官方 API 地址；当它有值时，会使用指定的兼容接口地址。其它兼容 OpenAI 协议的服务，例如 DeepSeek，也可以通过填写对应的 `base_url`、`api_key` 和 `model` 使用。
+当 `base_url` 为空字符串或 `null` 时，`ChatOpenAI` 会使用默认 OpenAI 官方 API 地址；当它有值时，会使用指定的兼容接口地址。其它兼容 OpenAI 协议的服务，例如 DeepSeek，也可以通过填写对应的 `base_url`、`api_key` 和 `model` 使用。
