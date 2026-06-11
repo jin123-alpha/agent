@@ -6,7 +6,7 @@
 
 ```text
 agent/
-|-- config.json             # 模型配置：base_url、api_key、model、stream
+|-- config.json             # 模型配置：base_url、api_key、model、stream、native_tools
 |-- data/
 |   `-- memory.json         # 本地长期记忆文件，默认被 .gitignore 忽略
 |-- run.py                  # 项目入口：调用模型、解析工具 JSON、多轮执行工具
@@ -34,9 +34,9 @@ pip install openai
 python run.py
 ```
 
-`run_agent(user_input, max_tool_calls=10)` 会循环调用模型。模型如果返回普通文本，就直接结束；如果返回工具调用 JSON，就执行工具并把结果交还给模型，直到模型认为信息足够并给出最终回答。
+`run_agent(user_input, max_tool_calls=10)` 会循环调用模型。默认优先使用 OpenAI 兼容接口的原生 `tools/function calling`；如果接口不支持 `tools` 参数，会自动退回普通 JSON 工具调用模式。模型如果返回普通文本，就直接结束；如果请求工具调用，就执行工具并把结果交还给模型，直到模型认为信息足够并给出最终回答。
 
-工具调用 JSON 格式：
+兜底 JSON 工具调用格式：
 
 ```json
 {"tool": "工具名", "arguments": {"参数名": "参数值"}}
@@ -163,11 +163,11 @@ TOOLS = [
 ]
 ```
 
-`run.py` 会自动读取函数签名和 docstring，生成 system prompt，并自动构造工具分发映射。
+`tools/__init__.py` 会自动读取函数签名和 docstring，生成原生工具 schema，并构造工具分发映射。`run.py` 负责选择原生 tools 或 JSON 兜底协议并执行工具循环。
 
 ## 长期记忆
 
-每次调用 `run_agent()` 时，程序会读取 `data/memory.json`，把最近的长期记忆注入 system prompt。模型也可以通过工具管理记忆：
+长期记忆保存在 `data/memory.json`。为了避免 system prompt 过长，程序不会默认把长期记忆全文注入上下文；模型会在需要时通过工具查询或更新记忆：
 
 - 用户明确说“记住……”时，模型应调用 `remember`。
 - 用户问“你记得什么……”或问题依赖历史偏好时，模型可调用 `recall_memory`。
@@ -185,7 +185,8 @@ TOOLS = [
   "base_url": "https://api.deepseek.com",
   "api_key": "ollama",
   "model": "deepseek-v4-flash",
-  "stream": true
+  "stream": true,
+  "native_tools": true
 }
 ```
 
@@ -194,7 +195,8 @@ TOOLS = [
 - `base_url`：OpenAI 兼容接口地址；为空字符串或 `null` 时使用 OpenAI SDK 默认官方地址。
 - `api_key`：接口密钥。
 - `model`：模型名称。
-- `stream`：是否使用流式输出，`true` 开启，`false` 关闭。由于工具调用是通过普通 JSON 文本识别的，工具决策阶段会先静默缓冲，最终答案会流式输出。
+- `stream`：是否使用 API 真流式输出，`true` 开启，`false` 关闭。原生 tools 模式会流式输出普通文本并在后台拼接工具调用；JSON 兜底模式的工具决策轮仍会静默缓冲，避免把工具 JSON 暴露给用户。
+- `native_tools`：是否优先使用 OpenAI 兼容接口的原生 `tools/function calling`。如果开启后接口不支持，程序会自动退回 JSON 工具调用模式。
 
 如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认 Ollama 配置：
 
@@ -203,7 +205,8 @@ TOOLS = [
   "base_url": "http://10.6.22.1:11434/v1",
   "api_key": "ollama",
   "model": "qwen3:8b",
-  "stream": false
+  "stream": false,
+  "native_tools": true
 }
 ```
 
@@ -216,7 +219,8 @@ TOOLS = [
   "base_url": "http://10.6.22.1:11434/v1",
   "api_key": "ollama",
   "model": "qwen3:8b",
-  "stream": false
+  "stream": false,
+  "native_tools": true
 }
 ```
 
@@ -229,7 +233,8 @@ TOOLS = [
   "base_url": "",
   "api_key": "你的 OpenAI API key",
   "model": "你要使用的官方模型名",
-  "stream": true
+  "stream": true,
+  "native_tools": true
 }
 ```
 
