@@ -1,23 +1,31 @@
 # Simple Tool Agent
 
-这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。`run.py` 负责构建 `StateGraph`，用模型节点和工具节点组成循环；`tools/` 目录负责放置工具函数。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
+这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。项目按 Agent、Runner、Tools、Handoff、Guardrail、Session、Tracing、Result 分层；`runner/` 负责构建 `StateGraph` 并管理循环，`run.py` 只负责终端入口调度，终端打印放在 `result/`。`tools/` 目录负责放置具体工具函数和工具注册适配。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
 
 ## 文件结构
 
 ```text
 agent/
+|-- agent/                  # Agent 描述能力：名称、指令、工具、协作钩子
 |-- config.json             # 模型配置：base_url、api_key、model、stream
 |-- data/
 |   `-- memory.json         # 本地长期记忆文件，默认被 .gitignore 忽略
+|-- guardrail/              # Guardrail：安全和质量检查接口
+|-- handoff/                # Handoff：多 Agent 协作路由接口
 |-- requirements.txt        # LangGraph / LangChain 依赖
-|-- run.py                  # 项目入口：构建 LangGraph、执行模型节点和工具节点
+|-- result/                 # Result：结构化结果、流事件和终端打印
+|-- run.py                  # 终端入口：读取配置并调用 runner/result
+|-- runner/                 # Runner：配置、LangGraph 构建、执行循环
+|-- session/                # Session：记忆和会话状态接口
 |-- tools/
-|   |-- __init__.py         # 工具注册表：TOOLS 和 TOOL_MAP
+|   |-- __init__.py         # 具体工具注册表：TOOLS 和 TOOL_MAP
 |   |-- code_tools.py       # 文件结构、读文件、创建文件、编辑文件、编译检查
 |   |-- math_tools.py       # 数学工具
 |   |-- memory_tools.py     # 长期记忆工具
+|   |-- registry.py         # 工具注册表对象和 LangChain 适配
 |   |-- security_tools.py   # 随机密钥工具
 |   `-- web_tools.py        # 网络搜索和网页正文抓取工具
+|-- tracing/                # Tracing：轻量调试事件
 `-- README.md
 ```
 
@@ -35,99 +43,9 @@ pip install -r requirements.txt
 python run.py
 ```
 
-`run_agent(user_input, max_tool_calls=10)` 会把用户输入放入 LangGraph 状态，然后在 `agent -> tools -> agent` 图中循环。模型通过 LangChain 的 `bind_tools()` 选择工具；工具执行结果会以 `ToolMessage` 返回给图，直到模型给出最终回答。
+`runner.run_agent(user_input, max_tool_calls=10)` 会把用户输入放入 LangGraph 状态，然后在 `agent -> tools -> agent` 图中循环。模型通过 LangChain 的 `bind_tools()` 选择工具；工具执行结果会以 `ToolMessage` 返回给图，直到模型给出最终回答。
 
-当 `stream=true` 时，`run_agent()` 使用 LangGraph 的 `messages` stream mode 流式输出模型可见文本。
-
-## 当前工具
-
-### `add`
-
-计算两个整数之和。
-
-```json
-{"tool": "add", "arguments": {"a": 3, "b": 5}}
-```
-
-### `generate_runtime_secret`
-
-生成运行时随机密钥。
-
-```json
-{"tool": "generate_runtime_secret", "arguments": {"length": 32}}
-```
-
-### `remember`
-
-保存一条长期记忆，适合记录用户明确要求记住的偏好、事实、项目约定或长期指令。记忆存储在 `data/memory.json`，默认不会提交到 Git。
-
-```json
-{"tool": "remember", "arguments": {"content": "用户喜欢简洁的中文回答", "category": "preference"}}
-```
-
-### `recall_memory`
-
-查询长期记忆。`query` 为空时返回最近记忆，可按 `category` 精确过滤。
-
-```json
-{"tool": "recall_memory", "arguments": {"query": "中文回答", "category": "preference", "max_results": 5}}
-```
-
-### `forget_memory`
-
-根据记忆 id 删除一条长期记忆。删除前可先调用 `recall_memory` 查找 id。
-
-```json
-{"tool": "forget_memory", "arguments": {"memory_id": "abc123def456"}}
-```
-
-### `list_workspace_files`
-
-获取当前工作区文件结构树，默认忽略 `.git`、`.agents`、`.codex`、`__pycache__`。
-
-```json
-{"tool": "list_workspace_files", "arguments": {"max_depth": 5}}
-```
-
-### `read_code_file`
-
-读取项目内文件的指定行范围，返回带行号的代码。
-
-```json
-{"tool": "read_code_file", "arguments": {"path": "run.py", "start_line": 1, "end_line": 80}}
-```
-
-### `create_file`
-
-在项目目录内创建文本文件。默认不覆盖已存在文件，可自动创建父目录。
-
-```json
-{"tool": "create_file", "arguments": {"path": "notes/todo.md", "content": "# TODO\n", "overwrite": false}}
-```
-
-### `edit_code_file`
-
-精确替换项目内文本文件中的内容。默认要求只替换 1 处，避免误改多个位置。
-
-```json
-{"tool": "edit_code_file", "arguments": {"path": "run.py", "old_text": "旧内容", "new_text": "新内容", "expected_replacements": 1}}
-```
-
-### `compile_python_files`
-
-编译检查 Python 文件并返回错误信息。`paths` 为空时检查整个工作区所有 `.py` 文件。
-
-```json
-{"tool": "compile_python_files", "arguments": {"paths": ["run.py", "tools/code_tools.py"]}}
-```
-
-### `web_search`
-
-联网搜索网页内容，返回标题、链接、搜索摘要，并默认抓取搜索结果网页的正文片段。搜索源不可用时会自动尝试下一个源。
-
-```json
-{"tool": "web_search", "arguments": {"query": "OpenAI API", "max_results": 3, "fetch_content": true, "content_chars": 1200}}
-```
+当 `stream=true` 时，`runner.stream_agent_events()` 使用 LangGraph 的 `messages` + `updates` stream mode 产出每一次 `agent` 模型节点产生的可见文本事件；`result/` 负责把这些事件打印到终端。如果模型先输出文字再调用工具，这段文字也会显示，不只显示最终回答。
 
 ## 添加新工具
 
@@ -160,7 +78,18 @@ TOOLS = [
 ]
 ```
 
-`run.py` 会把 `TOOLS` 中的普通 Python 函数包装成 LangChain `StructuredTool`，并通过 `ChatOpenAI(...).bind_tools(...)` 交给模型。`tools/__init__.py` 只负责维护工具注册表和分发映射。
+`tools/registry.py` 会把 `TOOLS` 中的普通 Python 函数包装成 LangChain `StructuredTool`，`runner/` 通过 `ChatOpenAI(...).bind_tools(...)` 交给模型。`tools/__init__.py` 维护具体工具函数的注册表。
+
+## 架构分层
+
+- `agent/`：描述 Agent 的名称、指令、工具、handoff、guardrail、session 和 tracing 能力。
+- `runner/`：管理 LangGraph 执行循环，构建模型节点、工具节点、条件边和流式事件。
+- `tools/`：保存具体工具函数，并把它们适配成 LangChain 工具。
+- `handoff/`：预留多 Agent 协作路由接口。
+- `guardrail/`：预留输入、输出或工具调用的安全和质量检查接口。
+- `session/`：封装长期记忆的读取和写入接口。
+- `tracing/`：记录轻量调试事件。
+- `result/`：定义 `RunResult` 和 `StreamEvent` 等结构化返回类型，并集中处理终端打印。
 
 ## 长期记忆
 
@@ -191,7 +120,7 @@ TOOLS = [
 - `base_url`：OpenAI 兼容接口地址；为空字符串或 `null` 时使用 OpenAI SDK 默认官方地址。
 - `api_key`：接口密钥。
 - `model`：模型名称。
-- `stream`：是否使用 LangGraph `messages` stream mode 流式输出模型可见文本。
+- `stream`：是否使用 LangGraph 流式输出模型可见文本。开启后会输出所有 `agent` 模型节点返回的文本，不只输出最终答案。
 
 如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认 Ollama 配置：
 

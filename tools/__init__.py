@@ -1,6 +1,7 @@
 from .code_tools import compile_python_files, create_file, edit_code_file, list_workspace_files, read_code_file
 from .math_tools import add
 from .memory_tools import forget_memory, recall_memory, remember
+from .registry import ToolRegistry, create_default_tool_registry
 from .security_tools import generate_runtime_secret
 from .web_tools import web_search
 
@@ -20,3 +21,10 @@ TOOLS = [
 ]
 
 TOOL_MAP = {tool.__name__: tool for tool in TOOLS}
+
+__all__ = [
+    "TOOLS",
+    "TOOL_MAP",
+    "ToolRegistry",
+    "create_default_tool_registry",
+]
