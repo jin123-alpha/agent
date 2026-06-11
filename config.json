@@ -1,6 +1,0 @@
-{
-  "base_url": "https://api.deepseek.com",
-  "api_key": "<从Deepseek获取的API密钥>",
-  "model": "deepseek-v4-flash",
-  "stream": true
-}
