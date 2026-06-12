@@ -56,7 +56,7 @@ SEARCH_CHECKLIST = StageChecklist(
             name="真实来源",
             description=(
                 "每个仓库的 stars, language, updated_at 等事实字段必须来自真实工具或 GitHub API。"
-                "如果缺少 source/api_url/retrieved_at 等来源字段，必须标记为证据不足。"
+                "如果缺少 source/api_url/retrieved_at 等来源字段，则需要通过查找对比来验证。"
             ),
         ),
         ChecklistItem(
