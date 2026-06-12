@@ -44,7 +44,8 @@ def run_single_agent_debug(
     """
     config = config or load_config()
     context_data = context_data or {}
-    input_prompt = mock_json_input(mock_input_factory)
+    raw_input = mock_input_factory()
+    input_prompt = mock_json_input(lambda: raw_input)
     prompt = _inject_context(input_prompt, context_data)
 
     if mock_output_factory:
@@ -69,6 +70,7 @@ def run_single_agent_debug(
             **context_data,
             "debug_agent": agent.name,
             "debug_output": output,
+            "debug_input": raw_input,
             "output_guardrail": _guardrail_to_dict(guardrail_result),
         }
         critic_prompt = _inject_context(

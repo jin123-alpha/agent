@@ -48,43 +48,6 @@ class StageChecklist:
 
 # --- 预定义检查清单（仅保留需要 LLM 判断的项） ---
 
-SEARCH_CHECKLIST = StageChecklist(
-    stage="GitHubSearchAgent",
-    max_retries=2,
-    items=[
-        ChecklistItem(
-            name="真实来源",
-            description=(
-                "每个仓库的 stars, language, updated_at 等事实字段必须来自真实工具或 GitHub API。"
-                "如果缺少 source/api_url/retrieved_at 等来源字段，则需要通过查找对比来验证。"
-            ),
-        ),
-        ChecklistItem(
-            name="占位数据检查",
-            description=(
-                "检查 stars 和 updated_at 是否像占位数据或模型编造数据，"
-                "例如 12345、9876、2025-01-01T00:00:00Z 等过于整齐的值。"
-                "发现疑似占位数据时必须标记为 high severity。"
-            ),
-        ),
-        ChecklistItem(
-            name="硬约束满足",
-            description=(
-                "每个仓库必须满足用户硬约束（如 stars、language、更新时间等）。"
-                "任何不满足硬约束的仓库必须标记为 failed。"
-            ),
-        ),
-        ChecklistItem(
-            name="主题相关性",
-            description=(
-                "仓库必须确实与用户需求相关。"
-                "教程类仓库、资料合集、技能集合不能和框架类项目同等对待，应标记为相关性风险。"
-            ),
-            required=False,
-        ),
-    ],
-)
-
 ANALYSIS_CHECKLIST = StageChecklist(
     stage="RepoAnalysisAgent",
     max_retries=2,
@@ -197,8 +160,8 @@ REPORT_CHECKLIST = StageChecklist(
 )
 
 # stage → checklist 映射
+# 注：GitHubSearchAgent 使用 DAG 内部自审，不在此处
 STAGE_CHECKLISTS: dict[str, StageChecklist] = {
-    "GitHubSearchAgent": SEARCH_CHECKLIST,
     "RepoAnalysisAgent": ANALYSIS_CHECKLIST,
     "ScoringAgent": SCORING_CHECKLIST,
     "ReportAgent": REPORT_CHECKLIST,
@@ -236,7 +199,8 @@ def build_critic_instructions(checklist: StageChecklist) -> str:
 ## 审查要求
 1. 没有来源支撑的事实字段必须写入 evidence_issues。
 2. 如果无法确认事实，不要默认通过，应标记 warning 或 failed。
-3. 对于【必须】项，只要存在严重证据不足，也应视为未通过。
+3. 对于【必须】项，采用阈值制：只有 ≥40% 的仓库存在问题时才判 failed（例如 5 个结果中至少 2 个有严重问题）。单个仓库的问题写入 evidence_issues 作为警告即可。
+4. 如果 passed=false，retry_suggestion 必须给出可执行的具体修改（例如"替换仓库 X"而非"重新搜索"），因为搜索流水线是确定性的，笼统的"重新搜索"不会产生不同结果。
 
 ## 检查清单
 {items_text}
