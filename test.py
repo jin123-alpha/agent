@@ -26,8 +26,8 @@ def mock_input_for_agent(agent_name: str):
 
     if agent_name == AGENT_GITHUB_SEARCH:
         return {
-            "project_type": "本地部署 RAG 知识库系统",
-            "keywords": ["RAG", "PDF", "Ollama", "Web UI", "local deployment"],
+            "project_type": "self-hosted RAG knowledge base system",
+            "keywords": ["RAG", "vector search", "Ollama", "PDF parsing"],
             "language": "不限",
             "constraints": ["开源", "支持本地模型", "方便二次开发"],
             "preferences": ["文档完善", "社区活跃"],
@@ -73,9 +73,10 @@ def mock_output_for_agent(agent_name: str) -> str:
                 {
                     "full_name": "example/local-rag",
                     "html_url": "https://github.com/example/local-rag",
-                    "description": "Local RAG knowledge base with PDF upload and Ollama support",
+                    "description": "Self-hosted RAG knowledge base with PDF upload and Ollama support",
                     "stars": 1234,
                     "language": "Python",
+                    "license": "MIT",
                     "updated_at": "2026-01-01T00:00:00Z",
                 }
             ],
@@ -202,9 +203,12 @@ def main():
     output_guardrail = select_output_guardrail(agent) if args.guardrail else None
     critic_agent = None
     if args.critic:
-        if args.agent not in STAGE_CHECKLISTS:
+        if args.agent == AGENT_GITHUB_SEARCH:
+            print("⚠️  GitHubSearchAgent 使用 DAG 内部自审，不支持外部 Critic。忽略 --critic。")
+        elif args.agent not in STAGE_CHECKLISTS:
             raise ValueError(f"{args.agent} has no CriticAgent checklist.")
-        critic_agent = create_critic_agent(args.agent)
+        else:
+            critic_agent = create_critic_agent(args.agent)
 
     result = run_single_agent_debug(
         agent,

@@ -20,10 +20,10 @@ REVIEW_PROMPT = """你是一个 GitHub 仓库搜索质检员。根据用户的�
 - 星数: {stars}
 
 ## 判定规则（严格）
-1. **关键词命中**：用户需求中的 keywords 至少要有 1 个能对应上仓库名或描述中的真实功能。如果 keywords 全部未命中 → 不通过。
+1. **关键词语义命中**：用户需求中的 keywords 至少要有 1 个在**语义上**与仓库功能相关。允许同义词、翻译、近似概念（如 "Web UI" ↔ "browser interface"、"本地部署" ↔ "self-hosted"、"PDF" ↔ "document parsing"）。**不能只检查字面是否出现**，要判断功能是否等价。如果所有关键词语义上都不匹配 → 不通过。
 2. **语言匹配**：用户指定了特定编程语言时，仓库语言必须匹配（允许近似，如 JS/TS）。语言不匹配 → 不通过。
 3. **排除非项目类**：教程、资料合集、awesome-list、技术博客、面试题、课程项目 → 不通过。
-4. **功能方向一致**：仓库的主要用途必须与用户 project_type 描述的方向一致。
+4. **功能方向一致**：仓库的主要用途必须与用户 project_type 描述的方向语义一致，不应只靠名字相似就通过。
 
 ## 输出格式
 只输出一个 JSON 对象，不要其他内容：
@@ -140,8 +140,6 @@ def self_review(state: dict, config: dict | None = None) -> dict:
 
         if relevant:
             reviewed.append(repo)
-            if reason:
-                logger.debug(f"self_review pass [{i+1}]: {repo.get('full_name')} — {reason}")
         else:
             skipped.append(f"{repo.get('full_name', 'N/A')}: {reason}")
 
