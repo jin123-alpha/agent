@@ -4,7 +4,7 @@ from handoff import Handoff
 from session import Session
 from tools import ToolRegistry
 
-from .agent import Agent
+from .agent import Agent, create_agent_state_schema
 
 AGENT_NAME = "RepoAnalysisAgent"
 
@@ -59,8 +59,6 @@ def create_repo_analysis_graph(**kwargs):
     以后可以在这里拆出 fetch_readme、list_repo_files、feature_extract
     等专用节点，让仓库分析拥有自己的流程。
     """
-    from typing import Literal
-
     from runner.langgraph_dependencies import import_langgraph_dependencies
     from runner.runner import build_model
     from tracing import Tracer
@@ -79,20 +77,18 @@ def create_repo_analysis_graph(**kwargs):
     END = deps["END"]
     START = deps["START"]
     StateGraph = deps["StateGraph"]
-    add_messages = deps["add_messages"]
-    Annotated = deps["Annotated"]
-    TypedDict = deps["TypedDict"]
-
-    class AgentState(TypedDict):
-        messages: Annotated[list, add_messages]
-        llm_calls: int
+    AgentState = create_agent_state_schema(
+        deps["Annotated"],
+        deps["TypedDict"],
+        deps["add_messages"],
+    )
 
     langchain_tools = agent.tools.as_langchain_tools(deps["StructuredTool"])
     langchain_tool_map = {tool.name: tool for tool in langchain_tools}
     model_with_tools = build_model(ChatOpenAI, langchain_tools, config)
     tracer = agent.tracer or Tracer()
 
-    def call_model(state: AgentState):
+    def call_model(state):
         tracer.record("repo_analysis_model_start", llm_calls=state.get("llm_calls", 0))
         messages = [
             SystemMessage(content=agent.system_prompt()),
@@ -108,7 +104,7 @@ def create_repo_analysis_graph(**kwargs):
             "llm_calls": state.get("llm_calls", 0) + 1,
         }
 
-    def call_tools(state: AgentState):
+    def call_tools(state):
         last_message = state["messages"][-1]
         tool_messages = []
 
@@ -142,7 +138,7 @@ def create_repo_analysis_graph(**kwargs):
 
         return {"messages": tool_messages}
 
-    def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
+    def should_continue(state):
         last_message = state["messages"][-1]
         if last_message.tool_calls and state.get("llm_calls", 0) <= max_tool_calls:
             return "tools"

@@ -25,6 +25,22 @@ DEFAULT_AGENT_INSTRUCTIONS = """
 """
 
 
+def create_agent_state_schema(Annotated, TypedDict, add_messages):
+    """
+    Build the shared LangGraph state schema used by all agents.
+
+    The LangGraph symbols are passed in from each graph factory so importing the
+    agent package does not require LangGraph unless a graph is actually built.
+    """
+    return TypedDict(
+        "AgentState",
+        {
+            "messages": Annotated[list, add_messages],
+            "llm_calls": int,
+        },
+    )
+
+
 @dataclass
 class Agent:
     """
