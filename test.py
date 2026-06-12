@@ -105,15 +105,33 @@ def mock_output_for_agent(agent_name: str) -> str:
         return json.dumps(
             [
                 {
+                    "project": "example/local-rag",
                     "full_name": "example/local-rag",
                     "scores": {
-                        "requirement_match": 9,
-                        "community_activity": 6,
-                        "doc_quality": 8,
-                        "engineering": 8,
-                        "deployment": 9,
+                        "function_match": 24,
+                        "deployment": 17,
+                        "developer_friendliness": 18,
+                        "community_activity": 10,
+                        "documentation": 8,
+                        "license_friendliness": 5,
                     },
-                    "weighted_total": 8.05,
+                    "total_score": 82,
+                    "reason": "功能、部署、工程、社区、文档和许可证均按固定规则评分。",
+                    "evidence": [
+                        {
+                            "source": "README.md",
+                            "quote": "Docker Compose and Ollama",
+                            "feature": "supports_local_deploy",
+                        }
+                    ],
+                    "weights": {
+                        "function_match": 30,
+                        "deployment": 20,
+                        "developer_friendliness": 20,
+                        "community_activity": 15,
+                        "documentation": 10,
+                        "license_friendliness": 5,
+                    },
                     "rank": 1,
                 }
             ],
@@ -122,12 +140,17 @@ def mock_output_for_agent(agent_name: str) -> str:
 
     if agent_name == AGENT_REPORT:
         return (
-            "# 开源技术选型报告\n\n"
-            "## 1. 需求概述\n本地部署 RAG 知识库系统。\n\n"
-            "## 2. 候选项目概览\n| 排名 | 项目 | 加权总分 |\n|---|---|---|\n| 1 | example/local-rag | 8.05 |\n\n"
-            "## 3. 详细分析\n支持 PDF、向量检索、Ollama 和 Web UI。\n\n"
-            "## 4. 推荐结论\n推荐 example/local-rag。\n\n"
-            "## 5. 注意事项\nmock 数据仅用于调试。"
+            "# 技术选型报告\n\n"
+            "## 1. 用户需求分析\n本地部署 RAG 知识库系统。\n\n"
+            "## 2. 候选项目概览\n| 排名 | 项目 | 总分 |\n|---|---|---|\n| 1 | example/local-rag | 82 |\n\n"
+            "## 3. GitHub 基础信息对比\nStars、语言和更新时间来自 GitHub metadata。\n\n"
+            "## 4. 功能特性对比\n支持 PDF、向量检索、Ollama 和 Web UI。\n\n"
+            "## 5. 项目评分矩阵\n六个维度合计 82/100。\n\n"
+            "## 6. 推荐方案\n推荐 example/local-rag。\n\n"
+            "## 7. 风险分析\nmock 数据未经过真实部署验证。\n\n"
+            "## 8. 后续开发路线建议\n先验证部署，再实现业务定制。\n\n"
+            "## 9. 参考来源\n- GitHub: https://github.com/example/local-rag\n"
+            "- README.md"
         )
 
     return "{}"

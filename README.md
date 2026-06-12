@@ -284,3 +284,87 @@ all-mpnet-base-v2/
 ```
 
 当 `base_url` 为空字符串或 `null` 时，`ChatOpenAI` 会使用默认 OpenAI 官方 API 地址；当它有值时，会使用指定的兼容接口地址。其它兼容 OpenAI 协议的服务，例如 DeepSeek，也可以通过填写对应的 `base_url`、`api_key` 和 `model` 使用。
+
+## D：评分、Guardrail 与质量实现
+
+D 模块已经实现确定性评分、规则检查、Critic 语义检查和结构化 Result。
+
+### 评分状态机
+
+`ScoringAgent` 的 `graph_factory` 使用独立状态机：
+
+```text
+START
+  -> parse_input
+  -> score_projects
+  -> validate_scores
+  -> finalize
+  -> END
+```
+
+评分不依赖 LLM 自由打分，固定使用 100 分制：
+
+| 维度 | 满分 |
+|---|---:|
+| 功能匹配度 `function_match` | 30 |
+| 部署便利性 `deployment` | 20 |
+| 二次开发友好度 `developer_friendliness` | 20 |
+| 社区活跃度 `community_activity` | 15 |
+| 文档完善度 `documentation` | 10 |
+| 许可证友好度 `license_friendliness` | 5 |
+
+输出字段为 `project`、`total_score`、`scores`、`reason`、`evidence`、`weights` 和 `rank`。
+
+### 评分与质量工具
+
+`tools/scoring_tools.py` 提供：
+
+- `score_projects`：合并仓库分析与 GitHub metadata，计算六维评分并排序。
+- `validate_project_result`：检查空候选、README、license、评分字段、范围、总分复算、排序和疑似幻觉字段。
+- `validate_report`：检查报告九个章节、Markdown 表格、参考来源和未知项目名。
+
+### 双层质量检查
+
+每个阶段先运行 `OutputGuardrail` 做程序规则检查；规则通过后再调用对应的 `CriticAgent` 做语义检查。Scoring 阶段已加入主流水线：
+
+```text
+ScoringAgent
+  -> OutputGuardrail（字段、范围、总分、排序）
+  -> CriticAgent_ScoringAgent（证据、约束、一致性）
+  -> ReportAgent
+```
+
+规则检查失败不会调用 Critic，而是携带失败原因重试当前 Agent。Critic 检查评分依据、缺失信息是否被不合理高分、硬约束是否正确降权。
+
+### Result schema
+
+`RunResult.metadata` 始终包含：
+
+```python
+{
+    "requirements": {},
+    "projects": [],
+    "scores": [],
+    "guardrail_warnings": [],
+    "agent_steps": [],
+}
+```
+
+### 单 Agent 调试
+
+```bash
+python test.py --agent ScoringAgent --guardrail
+python test.py --agent ScoringAgent --real-agent --guardrail
+python test.py --agent ScoringAgent --critic
+python test.py --agent ReportAgent --guardrail
+```
+
+`--real-agent` 会实际运行 ScoringAgent 的状态机，但该状态机本身不调用 LLM。`--critic` 会在规则检查配合之外调用真实 Critic LLM。
+
+### 自动测试
+
+```bash
+python -B -m unittest discover -s tests -v
+```
+
+完整检查结果见 [QUALITY_REPORT.md](QUALITY_REPORT.md)。

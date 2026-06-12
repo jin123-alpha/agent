@@ -147,6 +147,80 @@ def _parse_critic_result(critic_output: str) -> dict[str, Any]:
         }
 
 
+def _parse_json_output(value: Any, default: Any) -> Any:
+    if not isinstance(value, str):
+        return value if isinstance(value, type(default)) else default
+    text = value.strip()
+    if "```" in text:
+        import re
+
+        fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, type(default)) else default
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def _result_metadata(
+    context_data: dict[str, Any],
+    pipeline_trace: list[dict[str, Any]],
+    **extra: Any,
+) -> dict[str, Any]:
+    from agent.agents import (
+        AGENT_GITHUB_SEARCH,
+        AGENT_REQUIREMENT,
+        AGENT_SCORING,
+    )
+    from tools.scoring_tools import validate_project_result
+
+    requirements = _parse_json_output(context_data.get(AGENT_REQUIREMENT, ""), {})
+    projects = _parse_json_output(context_data.get(AGENT_GITHUB_SEARCH, ""), [])
+    analysed_projects = _parse_json_output(
+        context_data.get("RepoAnalysisAgent", ""),
+        [],
+    )
+    scores = _parse_json_output(context_data.get(AGENT_SCORING, ""), [])
+    warnings: list[str] = []
+
+    if analysed_projects or projects:
+        validation = _parse_json_output(
+            validate_project_result(analysed_projects or projects),
+            {},
+        )
+        warnings.extend(validation.get("warnings", []))
+        warnings.extend(validation.get("errors", []))
+    if scores:
+        score_validation = _parse_json_output(
+            validate_project_result(scores, analysed_projects),
+            {},
+        )
+        warnings.extend(score_validation.get("warnings", []))
+        warnings.extend(score_validation.get("errors", []))
+
+    for entry in pipeline_trace:
+        if "failures" in entry:
+            warnings.extend(str(item) for item in entry["failures"])
+        elif entry.get("status", "").endswith("max_retries_reached"):
+            warnings.append(
+                f"{entry.get('agent', 'unknown')} reached maximum quality-check retries."
+            )
+
+    metadata = {
+        "requirements": requirements,
+        "projects": projects,
+        "scores": scores,
+        "guardrail_warnings": list(dict.fromkeys(warnings)),
+        "agent_steps": [entry.get("agent") for entry in pipeline_trace if entry.get("agent")],
+        "pipeline_trace": pipeline_trace,
+        "agent_outputs": context_data,
+    }
+    metadata.update(extra)
+    return metadata
+
+
 def _run_single_agent(
     agent: Agent,
     prompt: str,
@@ -205,15 +279,15 @@ def _build_guardrail_block_result(
     })
     return RunResult(
         final_output=message,
-        metadata={
-            "blocked_by_output_guardrail": True,
-            "blocked_agent": agent_name,
-            "failures": guardrail_result.failures,
-            "pipeline_trace": pipeline_trace,
-            "agent_outputs": context_data,
-            "retry_counts": retry_counts,
-            "guardrail_retry_counts": guardrail_retry_counts,
-        },
+        metadata=_result_metadata(
+            context_data,
+            pipeline_trace,
+            blocked_by_output_guardrail=True,
+            blocked_agent=agent_name,
+            failures=guardrail_result.failures,
+            retry_counts=retry_counts,
+            guardrail_retry_counts=guardrail_retry_counts,
+        ),
     )
 
 
@@ -352,11 +426,12 @@ def run_multi_agent_pipeline(
             )
             return RunResult(
                 final_output=blocked,
-                metadata={
-                    "blocked_by_guardrail": True,
-                    "blocked_agent": agent_name,
-                    "pipeline_trace": pipeline_trace,
-                },
+                metadata=_result_metadata(
+                    context_data,
+                    pipeline_trace,
+                    blocked_by_guardrail=True,
+                    blocked_agent=agent_name,
+                ),
             )
 
         # --- 构造 prompt ---
@@ -403,16 +478,16 @@ def run_multi_agent_pipeline(
                         on_agent_end(agent_name, f"⚠️ {message}")
                     return RunResult(
                         final_output=message,
-                        metadata={
-                            "blocked_by_critic_format": True,
-                            "blocked_agent": agent_name,
-                            "reviewed_stage": reviewed_stage,
-                            "pipeline_trace": pipeline_trace,
-                            "agent_outputs": context_data,
-                            "retry_counts": retry_counts,
-                            "guardrail_retry_counts": guardrail_retry_counts,
-                            "critic_format_retry_counts": critic_format_retry_counts,
-                        },
+                        metadata=_result_metadata(
+                            context_data,
+                            pipeline_trace,
+                            blocked_by_critic_format=True,
+                            blocked_agent=agent_name,
+                            reviewed_stage=reviewed_stage,
+                            retry_counts=retry_counts,
+                            guardrail_retry_counts=guardrail_retry_counts,
+                            critic_format_retry_counts=critic_format_retry_counts,
+                        ),
                     )
 
                 critic_format_retry_counts[agent_name] = current_format_retries + 1
@@ -554,16 +629,16 @@ def run_multi_agent_pipeline(
                         )
                     return RunResult(
                         final_output=message,
-                        metadata={
-                            "blocked_by_critic": True,
-                            "blocked_agent": agent_name,
-                            "reviewed_stage": reviewed_stage,
-                            "pipeline_trace": pipeline_trace,
-                            "agent_outputs": context_data,
-                            "retry_counts": retry_counts,
-                            "guardrail_retry_counts": guardrail_retry_counts,
-                            "critic_format_retry_counts": critic_format_retry_counts,
-                        },
+                        metadata=_result_metadata(
+                            context_data,
+                            pipeline_trace,
+                            blocked_by_critic=True,
+                            blocked_agent=agent_name,
+                            reviewed_stage=reviewed_stage,
+                            retry_counts=retry_counts,
+                            guardrail_retry_counts=guardrail_retry_counts,
+                            critic_format_retry_counts=critic_format_retry_counts,
+                        ),
                     )
             else:
                 context_data.pop(f"{agent_name}_feedback", None)
@@ -621,13 +696,13 @@ def run_multi_agent_pipeline(
 
     return RunResult(
         final_output=final_output,
-        metadata={
-            "pipeline_trace": pipeline_trace,
-            "agent_outputs": context_data,
-            "retry_counts": retry_counts,
-            "guardrail_retry_counts": guardrail_retry_counts,
-            "critic_format_retry_counts": critic_format_retry_counts,
-        },
+        metadata=_result_metadata(
+            context_data,
+            pipeline_trace,
+            retry_counts=retry_counts,
+            guardrail_retry_counts=guardrail_retry_counts,
+            critic_format_retry_counts=critic_format_retry_counts,
+        ),
     )
 
 

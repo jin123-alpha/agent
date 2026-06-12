@@ -132,22 +132,29 @@ SCORING_CHECKLIST = StageChecklist(
         ChecklistItem(
             name="权重可复核",
             description=(
-                "必须提供评分权重或说明 weighted_total 的计算方式。"
-                "如果没有 weights 字段或计算说明，应标记为证据不足。"
+                "评分必须严格使用 30/20/20/15/10/5 六维权重，"
+                "total_score 必须等于各分项之和且范围为 0-100。"
             ),
         ),
         ChecklistItem(
             name="评分依据",
             description=(
                 "每个维度分数都应能追溯到 RepoAnalysisAgent 的字段或 evidence。"
-                "不允许只给分数而不给理由。"
+                "reason 必须解释分数，不能用没有来源的主观判断抬高得分。"
             ),
         ),
         ChecklistItem(
             name="硬约束降权",
             description=(
                 "如果某仓库不满足用户硬约束，或只是教程/资料合集而非框架，"
-                "requirement_match 不应获得高分。"
+                "function_match 不应获得高分。"
+            ),
+        ),
+        ChecklistItem(
+            name="缺失信息不冒进",
+            description=(
+                "缺少 README、license、更新时间或证据时，对应文档、许可证、"
+                "社区等维度不得获得接近满分，并应在 reason 中说明不确定性。"
             ),
         ),
     ],
