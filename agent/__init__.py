@@ -1,4 +1,4 @@
-from .agent import Agent, create_default_agent
+from .agent import Agent, create_agent_state_schema, create_default_agent
 from .agents import (
     AGENT_CRITIC,
     AGENT_CRITIC_ANALYSIS,
@@ -29,6 +29,7 @@ from .scoring_agent import create_scoring_agent
 
 __all__ = [
     "Agent",
+    "create_agent_state_schema",
     "create_default_agent",
     "AGENT_PIPELINE",
     "AGENT_FACTORIES",

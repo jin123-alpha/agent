@@ -1,6 +1,6 @@
-from typing import Callable, Literal
+from typing import Callable
 
-from agent import Agent, create_default_agent
+from agent import Agent, create_agent_state_schema, create_default_agent
 from result import RunResult, StreamEvent
 from tracing import Tracer
 
@@ -69,20 +69,18 @@ def create_react_agent_graph(
     END = deps["END"]
     START = deps["START"]
     StateGraph = deps["StateGraph"]
-    add_messages = deps["add_messages"]
-    Annotated = deps["Annotated"]
-    TypedDict = deps["TypedDict"]
-
-    class AgentState(TypedDict):
-        messages: Annotated[list, add_messages]
-        llm_calls: int
+    AgentState = create_agent_state_schema(
+        deps["Annotated"],
+        deps["TypedDict"],
+        deps["add_messages"],
+    )
 
     langchain_tools = agent.tools.as_langchain_tools(deps["StructuredTool"])
     langchain_tool_map = {tool.name: tool for tool in langchain_tools}
     model_with_tools = build_model(ChatOpenAI, langchain_tools, config)
     tracer = agent.tracer or Tracer()
 
-    def call_model(state: AgentState):
+    def call_model(state):
         tracer.record("model_start", llm_calls=state.get("llm_calls", 0))
         messages = [
             SystemMessage(content=agent.system_prompt()),
@@ -95,7 +93,7 @@ def create_react_agent_graph(
             "llm_calls": state.get("llm_calls", 0) + 1,
         }
 
-    def call_tools(state: AgentState):
+    def call_tools(state):
         last_message = state["messages"][-1]
         tool_messages = []
 
@@ -129,7 +127,7 @@ def create_react_agent_graph(
 
         return {"messages": tool_messages}
 
-    def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
+    def should_continue(state):
         last_message = state["messages"][-1]
         if last_message.tool_calls and state.get("llm_calls", 0) <= max_tool_calls:
             return "tools"
@@ -161,18 +159,16 @@ def create_model_only_agent_graph(
     END = deps["END"]
     START = deps["START"]
     StateGraph = deps["StateGraph"]
-    add_messages = deps["add_messages"]
-    Annotated = deps["Annotated"]
-    TypedDict = deps["TypedDict"]
-
-    class AgentState(TypedDict):
-        messages: Annotated[list, add_messages]
-        llm_calls: int
+    AgentState = create_agent_state_schema(
+        deps["Annotated"],
+        deps["TypedDict"],
+        deps["add_messages"],
+    )
 
     model = build_chat_model(ChatOpenAI, config)
     tracer = agent.tracer or Tracer()
 
-    def call_model(state: AgentState):
+    def call_model(state):
         tracer.record("model_only_start", llm_calls=state.get("llm_calls", 0))
         messages = [
             SystemMessage(content=agent.system_prompt()),

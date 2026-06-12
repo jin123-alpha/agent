@@ -4,7 +4,7 @@ from handoff import Handoff
 from session import Session
 from tools import ToolRegistry
 
-from .agent import Agent
+from .agent import Agent, create_agent_state_schema
 
 AGENT_NAME = "ScoringAgent"
 
@@ -72,18 +72,16 @@ def create_scoring_graph(**kwargs):
     END = deps["END"]
     START = deps["START"]
     StateGraph = deps["StateGraph"]
-    add_messages = deps["add_messages"]
-    Annotated = deps["Annotated"]
-    TypedDict = deps["TypedDict"]
-
-    class AgentState(TypedDict):
-        messages: Annotated[list, add_messages]
-        llm_calls: int
+    AgentState = create_agent_state_schema(
+        deps["Annotated"],
+        deps["TypedDict"],
+        deps["add_messages"],
+    )
 
     model = build_chat_model(ChatOpenAI, config)
     tracer = agent.tracer or Tracer()
 
-    def call_model(state: AgentState):
+    def call_model(state):
         tracer.record("scoring_model_start", llm_calls=state.get("llm_calls", 0))
         messages = [
             SystemMessage(content=agent.system_prompt()),
