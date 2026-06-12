@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from guardrail import Guardrail
+from guardrail import Guardrail, OutputGuardrail
 from handoff import Handoff
 from session import Session
 from tools import ToolRegistry, create_default_tool_registry
@@ -36,6 +36,7 @@ class Agent:
     tools: ToolRegistry = field(default_factory=create_default_tool_registry)
     handoffs: list[Handoff] = field(default_factory=list)
     guardrails: list[Guardrail] = field(default_factory=list)
+    output_guardrails: list[OutputGuardrail] = field(default_factory=list)
     session: Session | None = None
     tracer: Tracer | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

@@ -54,6 +54,7 @@ def create_repo_analysis_agent(
     """创建仓库分析 Agent。"""
     from tools import web_search
 
+    from guardrail.output_guardrails import STAGE_OUTPUT_GUARDRAILS
     from .agents import _make_handoff
 
     return Agent(
@@ -61,5 +62,7 @@ def create_repo_analysis_agent(
         instructions=INSTRUCTIONS,
         tools=ToolRegistry(tools=[web_search]),
         handoffs=[_make_handoff(AGENT_NAME, next_agent)],
+        output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),
     )
+

@@ -54,10 +54,14 @@ INSTRUCTIONS = """\
 
 def create_report_agent(session: Session | None = None) -> Agent:
     """创建报告生成 Agent。"""
+    from guardrail.output_guardrails import STAGE_OUTPUT_GUARDRAILS
+
     return Agent(
         name=AGENT_NAME,
         instructions=INSTRUCTIONS,
         tools=ToolRegistry(tools=[]),
         handoffs=[],  # 流水线最后一个，无 handoff
+        output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),
     )
+
