@@ -70,6 +70,7 @@ def _create_dag_graph(**kwargs):
         semantic_ranked: list[dict]
         reranked_candidates: list[dict]
         filtered_candidates: list[dict]
+        reviewed_candidates: list[dict]
         _dag_config: dict  # 内部使用：传递 runner config 到各节点
 
     # ── 导入节点函数 ────────────────────────────────────────────
@@ -78,70 +79,82 @@ def _create_dag_graph(**kwargs):
     from tools.github_search_retrieval import dense_retrieval
     from tools.github_search_rerank import llm_reranking
     from tools.github_search_filter import threshold_filtering
+    from tools.github_search_self_review import self_review
 
     # ── 包装器：将 config 冻结到 state 中供下游节点读取 ──────────
 
     def _convert_query(state: AgentState) -> dict:
         t0 = time.time()
-        print("[DAG:1/5 convert_query] 开始解析输入...")
+        print("[DAG:1/6 convert_query] 开始解析输入...")
         result = convert_query(state, config_from_runner)
         result["_dag_config"] = config_from_runner
         sq = result.get("searchable_query", "")
-        print(f"[DAG:1/5 convert_query] searchable_query = '{sq}'")
-        print(f"[DAG:1/5 convert_query] ⏱ {time.time() - t0:.2f}s")
+        print(f"[DAG:1/6 convert_query] searchable_query = '{sq}'")
+        print(f"[DAG:1/6 convert_query] ⏱ {time.time() - t0:.2f}s")
         return result
 
     def _ingest_github_repos(state: AgentState) -> dict:
         t0 = time.time()
-        print("[DAG:2/5 ingest_github_repos] 开始搜索 GitHub...")
+        print("[DAG:2/6 ingest_github_repos] 开始搜索 GitHub...")
         cfg = state.get("_dag_config", config_from_runner)
         sq = state.get("searchable_query", "")
-        print(f"[DAG:2/5 ingest_github_repos] 查询: '{sq}'")
-        print(f"[DAG:2/5 ingest_github_repos] github_api_key: {'已配置' if cfg.get('github_api_key') else '未配置!!!'}")
+        print(f"[DAG:2/6 ingest_github_repos] 查询: '{sq}'")
+        print(f"[DAG:2/6 ingest_github_repos] github_api_key: {'已配置' if cfg.get('github_api_key') else '未配置!!!'}")
         result = ingest_github_repos(state, cfg)
         repos = result.get("repositories", [])
-        print(f"[DAG:2/5 ingest_github_repos] 获取到 {len(repos)} 个仓库")
+        print(f"[DAG:2/6 ingest_github_repos] 获取到 {len(repos)} 个仓库")
         if repos:
-            print(f"[DAG:2/5 ingest_github_repos] 第一个: {repos[0].get('full_name', 'N/A')} (stars={repos[0].get('stars',0)})")
-        print(f"[DAG:2/5 ingest_github_repos] ⏱ {time.time() - t0:.2f}s")
+            print(f"[DAG:2/6 ingest_github_repos] 第一个: {repos[0].get('full_name', 'N/A')} (stars={repos[0].get('stars',0)})")
+        print(f"[DAG:2/6 ingest_github_repos] ⏱ {time.time() - t0:.2f}s")
         return result
 
     def _dense_retrieval(state: AgentState) -> dict:
         t0 = time.time()
         n = len(state.get("repositories", []))
-        print(f"[DAG:3/5 dense_retrieval] 输入 {n} 个仓库，开始语义检索...")
+        print(f"[DAG:3/6 dense_retrieval] 输入 {n} 个仓库，开始语义检索...")
         cfg = state.get("_dag_config", config_from_runner)
         result = dense_retrieval(state, cfg)
         ranked = result.get("semantic_ranked", [])
-        print(f"[DAG:3/5 dense_retrieval] 排序完成，输出 {len(ranked)} 个候选")
-        print(f"[DAG:3/5 dense_retrieval] ⏱ {time.time() - t0:.2f}s")
+        print(f"[DAG:3/6 dense_retrieval] 排序完成，输出 {len(ranked)} 个候选")
+        print(f"[DAG:3/6 dense_retrieval] ⏱ {time.time() - t0:.2f}s")
         return result
 
     def _llm_reranking(state: AgentState) -> dict:
         t0 = time.time()
         n = len(state.get("semantic_ranked", []))
-        print(f"[DAG:4/5 llm_reranking] 输入 {n} 个候选，开始 LLM 精排...")
+        print(f"[DAG:4/6 llm_reranking] 输入 {n} 个候选，开始 LLM 精排...")
         cfg = state.get("_dag_config", config_from_runner)
         result = llm_reranking(state, cfg)
         reranked = result.get("reranked_candidates", [])
-        print(f"[DAG:4/5 llm_reranking] 精排完成，输出 {len(reranked)} 个候选")
-        print(f"[DAG:4/5 llm_reranking] ⏱ {time.time() - t0:.2f}s")
+        print(f"[DAG:4/6 llm_reranking] 精排完成，输出 {len(reranked)} 个候选")
+        print(f"[DAG:4/6 llm_reranking] ⏱ {time.time() - t0:.2f}s")
         return result
 
     def _threshold_filtering(state: AgentState) -> dict:
         t0 = time.time()
         n = len(state.get("reranked_candidates", []))
-        print(f"[DAG:5/5 threshold_filtering] 输入 {n} 个候选，开始过滤...")
+        print(f"[DAG:5/6 threshold_filtering] 输入 {n} 个候选，开始过滤...")
         cfg = state.get("_dag_config", config_from_runner)
         result = threshold_filtering(state, cfg)
         filtered = result.get("filtered_candidates", [])
-        print(f"[DAG:5/5 threshold_filtering] 过滤后剩余 {len(filtered)} 个候选")
-        print(f"[DAG:5/5 threshold_filtering] ⏱ {time.time() - t0:.2f}s")
+        print(f"[DAG:5/6 threshold_filtering] 过滤后剩余 {len(filtered)} 个候选")
+        print(f"[DAG:5/6 threshold_filtering] ⏱ {time.time() - t0:.2f}s")
+        return result
+
+    def _self_review(state: AgentState) -> dict:
+        t0 = time.time()
+        n = len(state.get("filtered_candidates", []))
+        print(f"[DAG:6/6 self_review] 输入 {n} 个候选，开始逐条审核相关性...")
+        cfg = state.get("_dag_config", config_from_runner)
+        result = self_review(state, cfg)
+        reviewed = result.get("reviewed_candidates", [])
+        print(f"[DAG:6/6 self_review] 审核通过 {len(reviewed)} 个候选")
+        print(f"[DAG:6/6 self_review] ⏱ {time.time() - t0:.2f}s")
         return result
 
     # ── finalize 节点：输出 JSON → AIMessage ─────────────────────
     def _finalize(state: AgentState) -> dict:
-        filtered = state.get("filtered_candidates", [])
+        filtered = state.get("reviewed_candidates", []) or state.get("filtered_candidates", [])
         user_query = state.get("user_query", "") or state.get("searchable_query", "")
 
         # 尝试从 user_query 中提取 top_n
@@ -167,6 +180,7 @@ def _create_dag_graph(**kwargs):
                     "description": repo.get("description", ""),
                     "stars": repo.get("stars", 0),
                     "language": repo.get("language", ""),
+                    "license": repo.get("license", ""),
                     "updated_at": repo.get("updated_at", ""),
                 }
             )
@@ -188,6 +202,7 @@ def _create_dag_graph(**kwargs):
     builder.add_node("dense_retrieval", _dense_retrieval)
     builder.add_node("llm_reranking", _llm_reranking)
     builder.add_node("threshold_filtering", _threshold_filtering)
+    builder.add_node("self_review", _self_review)
     builder.add_node("finalize", _finalize)
 
     builder.add_edge(START, "convert_query")
@@ -195,7 +210,8 @@ def _create_dag_graph(**kwargs):
     builder.add_edge("ingest_github_repos", "dense_retrieval")
     builder.add_edge("dense_retrieval", "llm_reranking")
     builder.add_edge("llm_reranking", "threshold_filtering")
-    builder.add_edge("threshold_filtering", "finalize")
+    builder.add_edge("threshold_filtering", "self_review")
+    builder.add_edge("self_review", "finalize")
     builder.add_edge("finalize", END)
 
     return builder.compile(), HumanMessage

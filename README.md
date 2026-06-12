@@ -96,17 +96,18 @@ TOOLS = [
 
 默认情况下，`runner.create_agent_graph()` 会读取 `Agent.graph_factory`。每个具体 Agent 文件都定义自己的 graph factory，并在该文件中直接声明 `StateGraph`、node、edge 和条件路由；未来要改某个 Agent 的执行流程，只需要改对应文件。
 
-例如 [agent/github_search_agent.py](agent/github_search_agent.py) 中，GitHubSearchAgent 使用 DAG 流水线模式（非 agent-loop）：
+例如 [agent/github_search_agent.py](agent/github_search_agent.py) 中，GitHubSearchAgent 使用 DAG 流水线模式（非 agent-loop），含内部自审：
 
 ```python
 def _create_dag_graph(**kwargs):
-    # 5 节点线性流水线
+    # 6 节点线性流水线 + 内部自审
     builder = StateGraph(AgentState)
     builder.add_node("convert_query", _convert_query)
     builder.add_node("ingest_github_repos", _ingest_github_repos)
     builder.add_node("dense_retrieval", _dense_retrieval)
     builder.add_node("llm_reranking", _llm_reranking)
     builder.add_node("threshold_filtering", _threshold_filtering)
+    builder.add_node("self_review", _self_review)
     builder.add_node("finalize", _finalize)
 
     builder.add_edge(START, "convert_query")
@@ -114,23 +115,25 @@ def _create_dag_graph(**kwargs):
     builder.add_edge("ingest_github_repos", "dense_retrieval")
     builder.add_edge("dense_retrieval", "llm_reranking")
     builder.add_edge("llm_reranking", "threshold_filtering")
-    builder.add_edge("threshold_filtering", "finalize")
+    builder.add_edge("threshold_filtering", "self_review")
+    builder.add_edge("self_review", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile(), HumanMessage
 ```
 
-流水线流程：
+流水线流程（6 节点 + 最终输出）：
 
-1. **convert_query** — 结构化 JSON → 冒号分隔的搜索关键词
+1. **convert_query** — 结构化 JSON（project_type + keywords + language） → 冒号分隔的搜索关键词
 2. **ingest_github_repos** — 逐关键词调用 GitHub Search API，并发抓取每个仓库的 README + docs
 3. **dense_retrieval** — SentenceTransformer + BM25 混合语义检索
 4. **llm_reranking** — DeepSeek 单次调用对 top-N 精排打分
 5. **threshold_filtering** — 按 stars + 精排分阈值过滤低质量仓库
-6. **finalize** — 截取 top_n 并输出 JSON
+6. **self_review** — 内部逐条审核相关性：硬规则预检（语言匹配）+ LLM 语义审核，不通过的跳过并用后续候选补位
+7. **finalize** — 截取 top_n 并输出 JSON
 
 节点函数定义在 `tools/github_search_*.py` 中。
 
-其他 Agent 使用默认 ReAct agent-loop 模式（agent ↔ tools 循环）。
+> **注意：** GitHubSearchAgent 使用 DAG 内部自审，不走外部 CriticAgent 审查流水线。其他 Agent 仍使用默认 ReAct agent-loop 模式（agent ↔ tools 循环）。
 
 `graph_factory` 接收 `config`、`max_tool_calls`、`agent`、`on_tool_start`、`on_tool_end` 参数，并返回 `(graph, HumanMessage)`。
 
