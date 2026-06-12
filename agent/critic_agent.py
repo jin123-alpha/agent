@@ -48,48 +48,6 @@ class StageChecklist:
 
 # --- 预定义检查清单（仅保留需要 LLM 判断的项） ---
 
-SEARCH_CHECKLIST = StageChecklist(
-    stage="GitHubSearchAgent",
-    max_retries=2,
-    items=[
-        ChecklistItem(
-            name="搜索相关性",
-            description=(
-                "每个仓库必须与用户搜索关键词（keywords、project_type）确实相关。"
-                "根据仓库的 description 和名称判断是否匹配用户需求，"
-                "完全不相关的仓库应标记为 failed。"
-            ),
-        ),
-        ChecklistItem(
-            name="硬约束满足",
-            description=(
-                "注意：所有字段（stars、language、updated_at、license）均来自 GitHub Search API 真实数据，"
-                "不需要质疑数据真实性或来源。GitHub 公开搜索只返回公开仓库，不存在闭源问题。"
-                "只需检查：如果用户指定了 language，仓库语言是否匹配（允许近似匹配，如 JS/TS）。"
-                "明显不匹配的仓库才标记 failed。"
-            ),
-        ),
-        ChecklistItem(
-            name="主题相关性",
-            description=(
-                "仓库必须确实与用户需求相关。"
-                "教程类仓库、资料合集、技能集合不能和框架/工具类项目同等对待，"
-                "应标记为相关性风险。"
-            ),
-            required=False,
-        ),
-        ChecklistItem(
-            name="结果多样性",
-            description=(
-                "返回的仓库列表应避免过度集中在同一主题或同一作者。"
-                "如果多个仓库高度同质化（如都是同一框架的不同封装），"
-                "应提示多样性不足的风险。"
-            ),
-            required=False,
-        ),
-    ],
-)
-
 ANALYSIS_CHECKLIST = StageChecklist(
     stage="RepoAnalysisAgent",
     max_retries=2,
@@ -202,8 +160,8 @@ REPORT_CHECKLIST = StageChecklist(
 )
 
 # stage → checklist 映射
+# 注：GitHubSearchAgent 使用 DAG 内部自审，不在此处
 STAGE_CHECKLISTS: dict[str, StageChecklist] = {
-    "GitHubSearchAgent": SEARCH_CHECKLIST,
     "RepoAnalysisAgent": ANALYSIS_CHECKLIST,
     "ScoringAgent": SCORING_CHECKLIST,
     "ReportAgent": REPORT_CHECKLIST,
