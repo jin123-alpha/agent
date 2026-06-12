@@ -60,6 +60,9 @@ def _inject_retry_context(
 def _extract_output(final_messages: list) -> str:
     """从 LangGraph 最终状态中提取 Agent 的文本输出。"""
     for msg in reversed(final_messages):
+        if getattr(msg, "type", None) == "tool" or msg.__class__.__name__ == "ToolMessage":
+            continue
+
         content = getattr(msg, "content", None)
         if content and isinstance(content, str) and content.strip():
             return content.strip()
@@ -80,22 +83,36 @@ def _parse_critic_result(critic_output: str) -> dict[str, Any]:
     """解析 Critic 的 JSON 输出。"""
     try:
         text = critic_output.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            json_lines = []
-            in_block = False
-            for line in lines:
-                if line.startswith("```") and not in_block:
-                    in_block = True
-                    continue
-                elif line.startswith("```") and in_block:
-                    break
-                elif in_block:
-                    json_lines.append(line)
-            text = "\n".join(json_lines)
-        return json.loads(text)
+        if "```" in text:
+            import re
+
+            fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+            if fenced_match:
+                text = fenced_match.group(1).strip()
+
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            return {
+                "passed": False,
+                "overall_comment": "Critic 输出不是 JSON 对象，不能视为通过",
+                "retry_suggestion": "请只输出 Critic 审查 JSON，并包含 passed 字段。",
+            }
+
+        if not isinstance(parsed.get("passed"), bool):
+            return {
+                "passed": False,
+                "overall_comment": "Critic 输出缺少布尔 passed 字段，不能视为通过",
+                "retry_suggestion": "请根据审查清单输出包含 passed、checks、evidence_issues、overall_comment、retry_suggestion 的严格 JSON。",
+                "raw_output": parsed,
+            }
+
+        return parsed
     except (json.JSONDecodeError, ValueError):
-        return {"passed": True, "overall_comment": "Critic 输出解析失败，默认通过"}
+        return {
+            "passed": False,
+            "overall_comment": "Critic 输出解析失败，不能视为通过",
+            "retry_suggestion": "请只输出严格 JSON，不要输出工具结果、Markdown 说明或其他文本。",
+        }
 
 
 def _run_single_agent(
@@ -274,6 +291,7 @@ def run_multi_agent_pipeline(
                     # 不前进 i，重新执行 Critic
                     continue
                 else:
+                    message = f"Critic 审查未通过，且达到最大重试次数 ({max_retries})，流水线停止。"
                     pipeline_trace.append({
                         "agent": agent_name,
                         "status": "critic_max_retries_reached",
@@ -282,8 +300,20 @@ def run_multi_agent_pipeline(
                     if on_agent_end:
                         on_agent_end(
                             agent_name,
-                            f"⚠️ Critic 达到最大重试次数 ({max_retries})，继续",
+                            f"⚠️ {message}",
                         )
+                    return RunResult(
+                        final_output=message,
+                        metadata={
+                            "blocked_by_critic": True,
+                            "blocked_agent": agent_name,
+                            "reviewed_stage": reviewed_stage,
+                            "pipeline_trace": pipeline_trace,
+                            "agent_outputs": context_data,
+                            "retry_counts": retry_counts,
+                            "guardrail_retry_counts": guardrail_retry_counts,
+                        },
+                    )
             else:
                 pipeline_trace.append({
                     "agent": agent_name,
@@ -473,8 +503,9 @@ def stream_multi_agent_events(
                 else:
                     yield StreamEvent(
                         type="text",
-                        content=f"\n⚠️ Critic 达到最大重试次数 ({max_retries})，继续\n",
+                        content=f"\n⚠️ Critic 审查未通过，且达到最大重试次数 ({max_retries})，流水线停止。\n",
                     )
+                    return
 
             context_data[agent_name] = agent_output
         else:
