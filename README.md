@@ -20,6 +20,7 @@ agent/
 |-- tools/
 |   |-- __init__.py         # 具体工具注册表：TOOLS 和 TOOL_MAP
 |   |-- code_tools.py       # 文件结构、读文件、创建文件、编辑文件、编译检查
+|   |-- github_search_*.py  # GitHubSearchAgent DAG 节点（查询/摄入/检索/精排/过滤）
 |   |-- math_tools.py       # 数学工具
 |   |-- memory_tools.py     # 长期记忆工具
 |   |-- registry.py         # 工具注册表对象和 LangChain 适配
@@ -95,51 +96,41 @@ TOOLS = [
 
 默认情况下，`runner.create_agent_graph()` 会读取 `Agent.graph_factory`。每个具体 Agent 文件都定义自己的 graph factory，并在该文件中直接声明 `StateGraph`、node、edge 和条件路由；未来要改某个 Agent 的执行流程，只需要改对应文件。
 
-例如 [agent/github_search_agent.py](agent/github_search_agent.py) 中：
+例如 [agent/github_search_agent.py](agent/github_search_agent.py) 中，GitHubSearchAgent 使用 DAG 流水线模式（非 agent-loop）：
 
 ```python
-def create_github_search_graph(**kwargs):
-    deps = import_langgraph_dependencies()
-    StateGraph = deps["StateGraph"]
-    START = deps["START"]
-    END = deps["END"]
+def _create_dag_graph(**kwargs):
+    # 5 节点线性流水线
+    builder = StateGraph(AgentState)
+    builder.add_node("convert_query", _convert_query)
+    builder.add_node("ingest_github_repos", _ingest_github_repos)
+    builder.add_node("dense_retrieval", _dense_retrieval)
+    builder.add_node("llm_reranking", _llm_reranking)
+    builder.add_node("threshold_filtering", _threshold_filtering)
+    builder.add_node("finalize", _finalize)
 
-    def call_model(state):
-        ...
-
-    def call_tools(state):
-        ...
-
-    def should_continue(state):
-        ...
-
-    graph_builder = StateGraph(AgentState)
-    graph_builder.add_node("agent", call_model)
-    graph_builder.add_node("tools", call_tools)
-    graph_builder.add_edge(START, "agent")
-    graph_builder.add_conditional_edges("agent", should_continue, ["tools", END])
-    graph_builder.add_edge("tools", "agent")
-    return graph_builder.compile(), HumanMessage
+    builder.add_edge(START, "convert_query")
+    builder.add_edge("convert_query", "ingest_github_repos")
+    builder.add_edge("ingest_github_repos", "dense_retrieval")
+    builder.add_edge("dense_retrieval", "llm_reranking")
+    builder.add_edge("llm_reranking", "threshold_filtering")
+    builder.add_edge("threshold_filtering", "finalize")
+    builder.add_edge("finalize", END)
+    return builder.compile(), HumanMessage
 ```
 
-然后在创建 Agent 时绑定：
+流水线流程：
 
-```python
-return Agent(
-    name=AGENT_NAME,
-    instructions=INSTRUCTIONS,
-    graph_factory=create_github_search_graph,
-)
-```
+1. **convert_query** — 结构化 JSON → 冒号分隔的搜索关键词
+2. **ingest_github_repos** — 逐关键词调用 GitHub Search API，并发抓取每个仓库的 README + docs
+3. **dense_retrieval** — SentenceTransformer + BM25 混合语义检索
+4. **llm_reranking** — DeepSeek 单次调用对 top-N 精排打分
+5. **threshold_filtering** — 按 stars + 精排分阈值过滤低质量仓库
+6. **finalize** — 截取 top_n 并输出 JSON
 
-当前约定：
+节点函数定义在 `tools/github_search_*.py` 中。
 
-- `RequirementAgent`：`create_requirement_graph`，默认 model-only。
-- `GitHubSearchAgent`：`create_github_search_graph`，默认 ReAct tools graph。
-- `RepoAnalysisAgent`：`create_repo_analysis_graph`，默认 ReAct tools graph。
-- `ScoringAgent`：`create_scoring_graph`，默认 model-only。
-- `ReportAgent`：`create_report_graph`，默认 model-only。
-- `CriticAgent_*`：`create_critic_graph`，默认 ReAct tools graph，保留 `web_search` 核查能力。
+其他 Agent 使用默认 ReAct agent-loop 模式（agent ↔ tools 循环）。
 
 `graph_factory` 接收 `config`、`max_tool_calls`、`agent`、`on_tool_start`、`on_tool_end` 参数，并返回 `(graph, HumanMessage)`。
 
@@ -197,29 +188,74 @@ python test.py --agent GitHubSearchAgent --critic
 ```json
 {
   "base_url": "https://api.deepseek.com",
-  "api_key": "ollama",
-  "model": "deepseek-v4-flash",
-  "stream": true
+  "api_key": "你的 API key",
+  "model": "deepseek-v4-pro",
+  "stream": true,
+
+  "github_api_key": "github_pat_xxx",
+  "github_max_results": 100,
+  "github_per_page": 25,
+  "dense_retrieval_k": 100,
+  "llm_rerank_top_n": 50,
+  "retrieval_alpha": 0.7,
+  "min_stars": 50,
+  "rerank_threshold": 5.5
 }
 ```
 
-字段说明：
+### 基础字段
 
-- `base_url`：OpenAI 兼容接口地址；为空字符串或 `null` 时使用 OpenAI SDK 默认官方地址。
-- `api_key`：接口密钥。
-- `model`：模型名称。
-- `stream`：是否使用 LangGraph 流式输出模型可见文本。开启后会输出所有 `agent` 模型节点返回的文本，不只输出最终答案。
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `base_url` | string | OpenAI 兼容接口地址；为空时使用默认官方地址 |
+| `api_key` | string | LLM API 密钥 |
+| `model` | string | 模型名称 |
+| `stream` | bool | 是否使用流式输出 |
 
-如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认 Ollama 配置：
+### GitHubSearchAgent DAG 专用字段
 
-```json
-{
-  "base_url": "http://127.0.0.1:11434/v1",
-  "api_key": "ollama",
-  "model": "qwen3:8b",
-  "stream": false
-}
+这些字段控制 GitHubSearchAgent 的 DAG 流水线参数：
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `github_api_key` | `""` | GitHub Personal Access Token。留空时尝试读环境变量 `GITHUB_API_KEY`。需要 `public_repo` 权限。创建地址：https://github.com/settings/tokens |
+| `github_max_results` | `100` | 每个关键词从 GitHub API 拉取的最大仓库数 |
+| `github_per_page` | `25` | GitHub API 每页返回条数（max 100） |
+| `dense_retrieval_k` | `100` | 语义检索（SentenceTransformer + BM25）输出的候选数 |
+| `llm_rerank_top_n` | `50` | 送入 LLM 精排的 top-N 候选数 |
+| `retrieval_alpha` | `0.7` | 混合检索权重：α × Dense + (1-α) × BM25。0=纯 BM25，1=纯语义 |
+| `min_stars` | `50` | 星数阈值：低于此值**且**精排分低于 `rerank_threshold` 的仓库被丢弃 |
+| `rerank_threshold` | `5.5` | 精排分阈值：配合 `min_stars` 共同决定过滤 |
+
+如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认配置。
+
+## 下载语义检索模型
+
+GitHubSearchAgent 使用 `sentence-transformers/all-mpnet-base-v2` 做语义向量检索。模型约 1.7GB，需要离线下载到项目根目录。
+
+```bash
+# 安装 huggingface CLI（新版用 hf 命令）
+pip install huggingface_hub
+
+# 国内用户建议先设镜像
+export HF_ENDPOINT=https://hf-mirror.com
+
+# 下载到项目根目录
+hf download sentence-transformers/all-mpnet-base-v2 --local-dir ./all-mpnet-base-v2
 ```
+
+下载完成后目录结构：
+
+```text
+all-mpnet-base-v2/
+├── config.json
+├── model.safetensors
+├── tokenizer.json
+├── vocab.txt
+└── ...
+```
+
+程序会自动检测 `./all-mpnet-base-v2/` 是否存在并优先使用本地模型，无需额外配置。
 
 ## 使用本地模型 API
 
@@ -248,3 +284,87 @@ python test.py --agent GitHubSearchAgent --critic
 ```
 
 当 `base_url` 为空字符串或 `null` 时，`ChatOpenAI` 会使用默认 OpenAI 官方 API 地址；当它有值时，会使用指定的兼容接口地址。其它兼容 OpenAI 协议的服务，例如 DeepSeek，也可以通过填写对应的 `base_url`、`api_key` 和 `model` 使用。
+
+## D：评分、Guardrail 与质量实现
+
+D 模块已经实现确定性评分、规则检查、Critic 语义检查和结构化 Result。
+
+### 评分状态机
+
+`ScoringAgent` 的 `graph_factory` 使用独立状态机：
+
+```text
+START
+  -> parse_input
+  -> score_projects
+  -> validate_scores
+  -> finalize
+  -> END
+```
+
+评分不依赖 LLM 自由打分，固定使用 100 分制：
+
+| 维度 | 满分 |
+|---|---:|
+| 功能匹配度 `function_match` | 30 |
+| 部署便利性 `deployment` | 20 |
+| 二次开发友好度 `developer_friendliness` | 20 |
+| 社区活跃度 `community_activity` | 15 |
+| 文档完善度 `documentation` | 10 |
+| 许可证友好度 `license_friendliness` | 5 |
+
+输出字段为 `project`、`total_score`、`scores`、`reason`、`evidence`、`weights` 和 `rank`。
+
+### 评分与质量工具
+
+`tools/scoring_tools.py` 提供：
+
+- `score_projects`：合并仓库分析与 GitHub metadata，计算六维评分并排序。
+- `validate_project_result`：检查空候选、README、license、评分字段、范围、总分复算、排序和疑似幻觉字段。
+- `validate_report`：检查报告九个章节、Markdown 表格、参考来源和未知项目名。
+
+### 双层质量检查
+
+每个阶段先运行 `OutputGuardrail` 做程序规则检查；规则通过后再调用对应的 `CriticAgent` 做语义检查。Scoring 阶段已加入主流水线：
+
+```text
+ScoringAgent
+  -> OutputGuardrail（字段、范围、总分、排序）
+  -> CriticAgent_ScoringAgent（证据、约束、一致性）
+  -> ReportAgent
+```
+
+规则检查失败不会调用 Critic，而是携带失败原因重试当前 Agent。Critic 检查评分依据、缺失信息是否被不合理高分、硬约束是否正确降权。
+
+### Result schema
+
+`RunResult.metadata` 始终包含：
+
+```python
+{
+    "requirements": {},
+    "projects": [],
+    "scores": [],
+    "guardrail_warnings": [],
+    "agent_steps": [],
+}
+```
+
+### 单 Agent 调试
+
+```bash
+python test.py --agent ScoringAgent --guardrail
+python test.py --agent ScoringAgent --real-agent --guardrail
+python test.py --agent ScoringAgent --critic
+python test.py --agent ReportAgent --guardrail
+```
+
+`--real-agent` 会实际运行 ScoringAgent 的状态机，但该状态机本身不调用 LLM。`--critic` 会在规则检查配合之外调用真实 Critic LLM。
+
+### 自动测试
+
+```bash
+python -B -m unittest discover -s tests -v
+```
+
+完整检查结果见 [QUALITY_REPORT.md](QUALITY_REPORT.md)。

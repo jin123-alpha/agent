@@ -8,6 +8,15 @@ DEFAULT_CONFIG = {
     "api_key": "ollama",
     "model": "qwen3:8b",
     "stream": False,
+    # GitHubSearchAgent DAG 参数
+    "github_api_key": "",
+    "github_max_results": 100,
+    "github_per_page": 25,
+    "dense_retrieval_k": 100,
+    "llm_rerank_top_n": 50,
+    "retrieval_alpha": 0.7,
+    "min_stars": 50,
+    "rerank_threshold": 5.5,
 }
 
 

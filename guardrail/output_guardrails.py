@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from .guardrail import OutputGuardrail, OutputGuardrailResult
+from tools.scoring_tools import validate_project_result, validate_report
 
 
 # ---------------------------------------------------------------------------
@@ -158,10 +159,12 @@ ANALYSIS_OUTPUT_GUARDRAIL = OutputGuardrail(
 # ScoringAgent 输出 Guardrail
 # ---------------------------------------------------------------------------
 
-SCORING_REQUIRED_FIELDS = ["full_name", "scores", "weighted_total", "rank"]
+SCORING_REQUIRED_FIELDS = [
+    "project", "total_score", "scores", "reason", "evidence", "rank",
+]
 SCORE_DIMENSIONS = [
-    "requirement_match", "community_activity",
-    "doc_quality", "engineering", "deployment",
+    "function_match", "deployment", "developer_friendliness",
+    "community_activity", "documentation", "license_friendliness",
 ]
 
 
@@ -179,40 +182,9 @@ def _check_scoring_output(output: str, context: dict[str, Any]) -> OutputGuardra
     if len(parsed) == 0:
         failures.append("评分结果数组为空")
 
-    for i, item in enumerate(parsed):
-        if not isinstance(item, dict):
-            failures.append(f"第 {i+1} 项不是 JSON 对象")
-            continue
-
-        missing = _check_required_fields(item, SCORING_REQUIRED_FIELDS)
-        if missing:
-            failures.append(f"第 {i+1} 项缺少字段: {missing}")
-            continue
-
-        # scores 子字段
-        scores = item.get("scores", {})
-        if isinstance(scores, dict):
-            missing_dims = [d for d in SCORE_DIMENSIONS if d not in scores]
-            if missing_dims:
-                failures.append(f"第 {i+1} 项 scores 缺少维度: {missing_dims}")
-
-            # 分数范围 0-10
-            for dim, val in scores.items():
-                if isinstance(val, (int, float)) and (val < 0 or val > 10):
-                    failures.append(f"第 {i+1} 项 {dim}={val} 不在 0-10 范围内")
-        else:
-            failures.append(f"第 {i+1} 项 scores 不是 JSON 对象")
-
-    # 排序检查
-    if len(parsed) >= 2:
-        totals = []
-        for item in parsed:
-            if isinstance(item, dict):
-                wt = item.get("weighted_total")
-                if isinstance(wt, (int, float)):
-                    totals.append(wt)
-        if totals and totals != sorted(totals, reverse=True):
-            failures.append("weighted_total 未按降序排列")
+    source_projects = context.get("RepoAnalysisAgent", [])
+    validation = json.loads(validate_project_result(parsed, source_projects))
+    failures.extend(validation["errors"])
 
     return OutputGuardrailResult(ok=len(failures) == 0, failures=failures)
 
@@ -227,16 +199,6 @@ SCORING_OUTPUT_GUARDRAIL = OutputGuardrail(
 # ReportAgent 输出 Guardrail
 # ---------------------------------------------------------------------------
 
-# 报告结构必须包含的关键标记（宽松匹配）
-REPORT_REQUIRED_PATTERNS = [
-    (r"需求概述|需求分析|项目需求", "缺少'需求概述'章节"),
-    (r"候选项目|项目概览|项目对比", "缺少'候选项目概览'章节"),
-    (r"\|.*\|.*\|", "缺少项目对比表格"),
-    (r"详细分析|项目分析|深度分析", "缺少'详细分析'章节"),
-    (r"推荐结论|总结|推荐", "缺少'推荐结论'章节"),
-]
-
-
 def _check_report_output(output: str, context: dict[str, Any]) -> OutputGuardrailResult:
     """ReportAgent 纯规则校验。"""
     failures = []
@@ -244,12 +206,9 @@ def _check_report_output(output: str, context: dict[str, Any]) -> OutputGuardrai
     if not output or not output.strip():
         return OutputGuardrailResult(ok=False, failures=["报告内容为空"])
 
-    if len(output.strip()) < 200:
-        failures.append(f"报告过短 ({len(output.strip())} 字符)，可能内容不完整")
-
-    for pattern, err_msg in REPORT_REQUIRED_PATTERNS:
-        if not re.search(pattern, output):
-            failures.append(err_msg)
+    known_projects = context.get("GitHubSearchAgent", [])
+    validation = json.loads(validate_report(output, known_projects))
+    failures.extend(validation["errors"])
 
     return OutputGuardrailResult(ok=len(failures) == 0, failures=failures)
 
