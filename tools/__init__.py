@@ -2,6 +2,7 @@ from .code_tools import compile_python_files, create_file, edit_code_file, list_
 from .math_tools import add
 from .memory_tools import forget_memory, recall_memory, remember
 from .registry import ToolRegistry, create_default_tool_registry
+from .scoring_tools import score_projects, validate_project_result, validate_report
 from .security_tools import generate_runtime_secret
 from .web_tools import web_search
 
@@ -18,6 +19,9 @@ TOOLS = [
     edit_code_file,
     compile_python_files,
     web_search,
+    score_projects,
+    validate_project_result,
+    validate_report,
 ]
 
 TOOL_MAP = {tool.__name__: tool for tool in TOOLS}
@@ -27,4 +31,7 @@ __all__ = [
     "TOOL_MAP",
     "ToolRegistry",
     "create_default_tool_registry",
+    "score_projects",
+    "validate_project_result",
+    "validate_report",
 ]
