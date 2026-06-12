@@ -7,7 +7,15 @@ import re
 logger = logging.getLogger(__name__)
 
 
-def _build_searchable_query(input_json: str) -> str:
+def _extract_language(data: dict) -> str:
+    """从需求数据中提取语言过滤字段。"""
+    language = data.get("language", "")
+    if isinstance(language, str) and language.strip() and language.strip().lower() != "不限":
+        return language.strip().lower()
+    return ""
+
+
+def _build_searchable_query(input_json: str) -> dict:
     """
     从 RequirementAgent 的 JSON 输出构建 GitHub Search API 的 q 参数。
 
@@ -48,13 +56,10 @@ def _build_searchable_query(input_json: str) -> str:
             continue
         q_parts.append(kw)
 
-    # 语言
-    language = data.get("language", "")
-    if isinstance(language, str) and language.strip() and language.strip() != "不限":
-        q_parts.append(f"language:{language.strip().lower()}")
-
-    # 用冒号分隔，供 ingest 阶段逐关键词搜索（匹配 DeepGit 模式）
-    return ":".join(q_parts)
+    return {
+        "searchable_query": ":".join(q_parts),
+        "target_language": _extract_language(data),
+    }
 
 
 def convert_query(state: dict, config: dict | None = None) -> dict:
@@ -100,10 +105,13 @@ def convert_query(state: dict, config: dict | None = None) -> dict:
     except (json.JSONDecodeError, TypeError):
         pass
 
-    searchable_query = _build_searchable_query(input_text)
-    logger.info(f"convert_query: searchable_query = {searchable_query}")
+    result = _build_searchable_query(input_text)
+    searchable_query = result["searchable_query"]
+    target_language = result["target_language"]
+    logger.info(f"convert_query: searchable_query = {searchable_query}, target_language = {target_language}")
 
     return {
         "searchable_query": searchable_query,
+        "target_language": target_language,
         "user_query": input_text,
     }

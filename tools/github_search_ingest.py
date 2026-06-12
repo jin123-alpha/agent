@@ -10,6 +10,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# 抑制 httpx 的 HTTP 请求日志
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 FILE_CONTENT_CACHE: dict[str, str] = {}
 
 
@@ -43,7 +46,7 @@ async def _fetch_readme_content(
             if content:
                 return base64.b64decode(content).decode("utf-8", errors="replace")
     except Exception as exc:
-        logger.error(f"fetch_readme {repo_full_name}: {exc}")
+        logger.debug(f"fetch_readme {repo_full_name}: {exc}")
     return ""
 
 
@@ -60,7 +63,7 @@ async def _fetch_file_content(
             FILE_CONTENT_CACHE[download_url] = text
             return text
     except Exception as exc:
-        logger.error(f"fetch_file {download_url}: {exc}")
+        logger.debug(f"fetch_file {download_url}: {exc}")
     return ""
 
 
@@ -90,7 +93,7 @@ async def _fetch_directory_markdown(
                     ):
                         md_parts.append(f"\n\n# {item['name']}\n{content}")
     except Exception as exc:
-        logger.error(f"fetch_directory_markdown {repo_full_name}/{path}: {exc}")
+        logger.debug(f"fetch_directory_markdown {repo_full_name}/{path}: {exc}")
     return "".join(md_parts)
 
 
@@ -133,7 +136,7 @@ async def _fetch_repo_documentation(
                 if not isinstance(res, Exception) and res:
                     doc_parts.append(res)
     except Exception as exc:
-        logger.error(f"fetch_repo_documentation {repo_full_name}: {exc}")
+        logger.debug(f"fetch_repo_documentation {repo_full_name}: {exc}")
 
     readme = await readme_task
     if readme:
@@ -164,10 +167,8 @@ async def _fetch_github_repositories(
             }
             try:
                 response = await client.get(url, headers=headers, params=params)
-                print(f"  [ingest] page={page} status={response.status_code}")
 
                 if response.status_code in (403, 429):
-                    print(f"  [ingest] 限速，等待重试...")
                     logger.warning(
                         f"GitHub API rate limited (page {page}, status {response.status_code})"
                     )
@@ -181,7 +182,6 @@ async def _fetch_github_repositories(
                     response = await client.get(
                         url, headers=headers, params=params
                     )
-                    print(f"  [ingest] page={page} retry status={response.status_code}")
                     if response.status_code != 200:
                         logger.error(
                             f"GitHub API error after retry: {response.status_code}"
@@ -193,16 +193,13 @@ async def _fetch_github_repositories(
                         msg = response.json().get("message", response.text[:200])
                     except Exception:
                         msg = response.text[:200]
-                    print(f"  [ingest] API error: {response.status_code} {msg}")
                     logger.error(
                         f"GitHub API error {response.status_code}: {msg}"
                     )
                     break
 
                 data = response.json()
-                total_count = data.get("total_count", 0)
                 items = data.get("items", [])
-                print(f"  [ingest] page={page} total_count={total_count} items={len(items)}")
 
                 if not items:
                     break
@@ -269,22 +266,14 @@ async def _ingest_github_repos_async(state: dict, config: dict | None = None) ->
     max_results = cfg.get("github_max_results", 100)
     per_page = cfg.get("github_per_page", 25)
 
-    # 拆分关键词和语言标签（仿 DeepGit 模式）
-    raw_parts = [p.strip() for p in searchable_query.split(":") if p.strip()]
-    target_language = ""
-    keywords = []
-    for p in raw_parts:
-        if p.startswith("language:"):
-            target_language = p  # 已经是 "language:python" 格式
-        else:
-            keywords.append(p)
+    # 拆分关键词（language 由 convert_query 独立提供，不在此处）
+    keywords = [p.strip() for p in searchable_query.split(":") if p.strip()]
+    target_language = state.get("target_language", "")
 
     if not keywords:
-        keywords = raw_parts  # fallback
+        keywords = searchable_query.split(":")
+        keywords = [p.strip() for p in keywords if p.strip()]
 
-    print(f"  [ingest] 关键词列表: {keywords}")
-    if target_language:
-        print(f"  [ingest] 目标语言: {target_language}")
 
     # 并发搜索每个关键词
     tasks = []
@@ -314,10 +303,9 @@ async def _ingest_github_repos_async(state: dict, config: dict | None = None) ->
     all_repos.sort(key=lambda x: x.get("stars", 0), reverse=True)
     max_repos_before_retrieval = cfg.get("github_max_results", 100) * 2  # 默认 200
     if len(all_repos) > max_repos_before_retrieval:
-        print(f"  [ingest] 预截断: {len(all_repos)} → {max_repos_before_retrieval} (按 stars 取 top)")
+        logger.info(f"ingest: pre-truncating {len(all_repos)} → {max_repos_before_retrieval}")
         all_repos = all_repos[:max_repos_before_retrieval]
 
-    print(f"  [ingest] 最终 {len(all_repos)} 个仓库进入语义检索")
     logger.info(f"Ingested {len(all_repos)} unique repositories from {len(keywords)} keywords.")
 
     return {

@@ -109,7 +109,7 @@ def dense_retrieval(state: dict, config: dict | None = None) -> dict:
     for repo in repos:
         doc = repo.get("combined_doc", "") or repo.get("description", "")
         docs.append(doc[:1000] if len(doc) > 1000 else doc)
-    print(f"  [dense] 文档总字符数: {sum(len(d) for d in docs)} (截断后)")
+    logger.debug(f"dense_retrieval: {len(docs)} docs, total chars={sum(len(d) for d in docs)}")
     user_query = state.get("user_query", "") or state.get("searchable_query", "")
 
     if not user_query.strip():
