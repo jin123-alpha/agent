@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from guardrail import Guardrail, OutputGuardrail
 from handoff import Handoff
@@ -39,6 +39,7 @@ class Agent:
     output_guardrails: list[OutputGuardrail] = field(default_factory=list)
     session: Session | None = None
     tracer: Tracer | None = None
+    graph_factory: Callable[..., Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def system_prompt(self) -> str:

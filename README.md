@@ -91,6 +91,67 @@ TOOLS = [
 - `tracing/`：记录轻量调试事件。
 - `result/`：定义 `RunResult` 和 `StreamEvent` 等结构化返回类型，并集中处理终端打印。
 
+## Agent Graph 定制
+
+默认情况下，`runner.create_agent_graph()` 会为 Agent 创建一个 ReAct 风格的工具循环图：
+
+```text
+agent -> tools -> agent -> END
+```
+
+如果某个 Agent 需要自己的图，可以在创建 Agent 时传入 `graph_factory`。例如纯 Critic 或纯格式转换 Agent 可以使用不绑定工具的单模型图：
+
+```python
+from agent import Agent
+from runner import create_model_only_agent_graph
+
+critic = Agent(
+    name="CriticAgent",
+    instructions="只审查输出质量，不调用工具。",
+    graph_factory=create_model_only_agent_graph,
+)
+```
+
+`graph_factory` 会接收 `config`、`max_tool_calls`、`agent`、`on_tool_start`、`on_tool_end` 参数，并返回 `(graph, HumanMessage)`。
+
+## 单 Agent 调试
+
+`runner.run_single_agent_debug()` 可用于单独测试某个 Agent。输入可以由自定义 mock 函数生成 JSON；也可以传入 `mock_output_factory` 跳过真实 LLM 调用，只测试 OutputGuardrail 或 Critic 流程。
+
+```python
+from agent import Agent
+from guardrail import OutputGuardrail, OutputGuardrailResult
+from result import print_debug_result
+from runner import run_single_agent_debug
+
+agent = Agent(name="MockAgent", instructions="输出 JSON。")
+
+guardrail = OutputGuardrail(
+    name="must_json",
+    check=lambda output, ctx: OutputGuardrailResult(
+        ok=output.strip().startswith("{"),
+        failures=[] if output.strip().startswith("{") else ["not json"],
+    ),
+)
+
+result = run_single_agent_debug(
+    agent,
+    mock_input_factory=lambda: {"repos": [{"full_name": "owner/repo"}]},
+    output_guardrail=guardrail,
+    mock_output_factory=lambda prompt, ctx: "{\"ok\": true}",
+)
+
+print_debug_result(result)
+```
+
+调试链路支持：
+
+- 只跑单个 Agent
+- 使用 mock JSON 输入
+- 使用 mock output 跳过真实模型
+- 可选接 OutputGuardrail
+- 可选接 CriticAgent 做语义审查
+
 ## 长期记忆
 
 长期记忆保存在 `data/memory.json`。为了避免 system prompt 过长，程序不会默认把长期记忆全文注入上下文；模型会在需要时通过工具查询或更新记忆：

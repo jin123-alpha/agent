@@ -4,7 +4,7 @@ import threading
 from contextlib import contextmanager
 from collections.abc import Iterable
 
-from .result import RunResult, StreamEvent
+from .result import DebugResult, RunResult, StreamEvent
 
 
 def print_stream_events(events: Iterable[StreamEvent]) -> None:
@@ -25,6 +25,25 @@ def print_stream_events(events: Iterable[StreamEvent]) -> None:
 def print_run_result(result: RunResult) -> None:
     if result.final_output:
         print(result.final_output)
+
+
+def print_debug_result(result: DebugResult) -> None:
+    print(f"# Debug Result: {result.agent_name}")
+    print("\n## Input")
+    print(result.input_data)
+    print("\n## Output")
+    print(result.output)
+
+    if result.output_guardrail_result is not None:
+        print("\n## Output Guardrail")
+        print(f"ok: {result.output_guardrail_result.ok}")
+        if result.output_guardrail_result.failures:
+            for failure in result.output_guardrail_result.failures:
+                print(f"- {failure}")
+
+    if result.critic_output:
+        print("\n## Critic Output")
+        print(result.critic_output)
 
 
 @contextmanager
