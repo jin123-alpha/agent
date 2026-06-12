@@ -222,6 +222,8 @@ async def _fetch_github_repositories(
                     repo_link = repo["html_url"]
                     full_name = repo.get("full_name", "")
                     star_count = repo.get("stargazers_count", 0)
+                    license_info = repo.get("license")
+                    license_spdx = license_info.get("spdx_id", "") if license_info else ""
                     repos.append(
                         {
                             "title": repo.get("name", ""),
@@ -229,6 +231,7 @@ async def _fetch_github_repositories(
                             "html_url": repo_link,
                             "description": repo.get("description", ""),
                             "stars": star_count,
+                            "license": license_spdx,
                             "language": repo.get("language", ""),
                             "updated_at": repo.get("updated_at", ""),
                             "open_issues_count": repo.get("open_issues_count", 0),

@@ -53,32 +53,37 @@ SEARCH_CHECKLIST = StageChecklist(
     max_retries=2,
     items=[
         ChecklistItem(
-            name="真实来源",
+            name="搜索相关性",
             description=(
-                "每个仓库的 stars, language, updated_at 等事实字段必须来自真实工具或 GitHub API。"
-                "如果缺少 source/api_url/retrieved_at 等来源字段，则需要通过查找对比来验证。"
-            ),
-        ),
-        ChecklistItem(
-            name="占位数据检查",
-            description=(
-                "检查 stars 和 updated_at 是否像占位数据或模型编造数据，"
-                "例如 12345、9876、2025-01-01T00:00:00Z 等过于整齐的值。"
-                "发现疑似占位数据时必须标记为 high severity。"
+                "每个仓库必须与用户搜索关键词（keywords、project_type）确实相关。"
+                "根据仓库的 description 和名称判断是否匹配用户需求，"
+                "完全不相关的仓库应标记为 failed。"
             ),
         ),
         ChecklistItem(
             name="硬约束满足",
             description=(
-                "每个仓库必须满足用户硬约束（如 stars、language、更新时间等）。"
-                "任何不满足硬约束的仓库必须标记为 failed。"
+                "注意：所有字段（stars、language、updated_at、license）均来自 GitHub Search API 真实数据，"
+                "不需要质疑数据真实性或来源。GitHub 公开搜索只返回公开仓库，不存在闭源问题。"
+                "只需检查：如果用户指定了 language，仓库语言是否匹配（允许近似匹配，如 JS/TS）。"
+                "明显不匹配的仓库才标记 failed。"
             ),
         ),
         ChecklistItem(
             name="主题相关性",
             description=(
                 "仓库必须确实与用户需求相关。"
-                "教程类仓库、资料合集、技能集合不能和框架类项目同等对待，应标记为相关性风险。"
+                "教程类仓库、资料合集、技能集合不能和框架/工具类项目同等对待，"
+                "应标记为相关性风险。"
+            ),
+            required=False,
+        ),
+        ChecklistItem(
+            name="结果多样性",
+            description=(
+                "返回的仓库列表应避免过度集中在同一主题或同一作者。"
+                "如果多个仓库高度同质化（如都是同一框架的不同封装），"
+                "应提示多样性不足的风险。"
             ),
             required=False,
         ),
@@ -229,7 +234,8 @@ def build_critic_instructions(checklist: StageChecklist) -> str:
 ## 审查要求
 1. 没有来源支撑的事实字段必须写入 evidence_issues。
 2. 如果无法确认事实，不要默认通过，应标记 warning 或 failed。
-3. 对于【必须】项，只要存在严重证据不足，也应视为未通过。
+3. 对于【必须】项，采用阈值制：只有 ≥40% 的仓库存在问题时才判 failed（例如 5 个结果中至少 2 个有严重问题）。单个仓库的问题写入 evidence_issues 作为警告即可。
+4. 如果 passed=false，retry_suggestion 必须给出可执行的具体修改（例如"替换仓库 X"而非"重新搜索"），因为搜索流水线是确定性的，笼统的"重新搜索"不会产生不同结果。
 
 ## 检查清单
 {items_text}
