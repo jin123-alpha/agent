@@ -1,121 +1,195 @@
-"""ScoringAgent —— 项目评分排名专家。"""
+"""ScoringAgent: deterministic scoring and validation state machine."""
 
-from handoff import Handoff
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
 from session import Session
-from tools import ToolRegistry
+from tools import ToolRegistry, score_projects, validate_project_result
 
-from .agent import Agent, create_agent_state_schema
+from .agent import Agent
 
 AGENT_NAME = "ScoringAgent"
 
 INSTRUCTIONS = """\
-你是 ScoringAgent —— 项目评分排名专家。
+你是 ScoringAgent，负责使用固定、可复核的规则给候选项目评分。
 
-## 输入
-你会收到需求 JSON 和仓库分析结果 JSON（由前序 Agent 生成）。
+评分维度与满分：
+- 功能匹配度 function_match：30
+- 部署便利性 deployment：20
+- 二次开发友好度 developer_friendliness：20
+- 社区活跃度 community_activity：15
+- 文档完善度 documentation：10
+- 许可证友好度 license_friendliness：5
 
-## 任务
-根据以下维度对每个仓库打分（每项 0-10 分），并计算加权总分：
-
-| 维度 | 权重 | 说明 |
-|------|------|------|
-| 需求匹配度 | 30% | features 与用户 keywords/constraints 的匹配程度 |
-| 社区活跃度 | 20% | stars、更新时间 |
-| 文档质量   | 20% | has_docs、readme_summary 质量 |
-| 工程规范   | 15% | has_tests、has_ci、project_structure_quality |
-| 部署友好度 | 15% | has_docker、dependency_files 规范程度 |
-
-## 输出格式（严格 JSON 数组，按总分降序）
-[
-  {
-    "full_name": "owner/repo",
-    "scores": {
-      "requirement_match": 8,
-      "community_activity": 9,
-      "doc_quality": 7,
-      "engineering": 8,
-      "deployment": 6
-    },
-    "weighted_total": 7.85,
-    "rank": 1
-  }
-]
-
-## 规则
-- weighted_total = 各项分数 × 对应权重之和，保留两位小数。
-- 必须按 weighted_total 降序排列并标注 rank。
-- 只返回 JSON 数组，不要多余解释。
-- 评分完成后，将结果交给下一个 Agent。
+你必须使用 score_projects 的确定性结果，不得自行修改分数。输出为 JSON 数组，
+每项包含 project、total_score、scores、reason、evidence、weights 和 rank。
 """
+
+
+def _decode_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return value
+
+
+def _extract_context(prompt: str) -> dict[str, Any]:
+    match = re.search(r"```json\s*(.*?)\s*```", prompt, re.DOTALL)
+    if match:
+        parsed = _decode_json(match.group(1))
+        if isinstance(parsed, dict):
+            return parsed
+
+    parsed = _decode_json(prompt)
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def create_scoring_graph(**kwargs):
     """
-    ScoringAgent 的独立 LangGraph 流程。
+    Build the scoring state machine.
 
-    当前流程：
-    START -> agent -> END
-
-    以后如果评分要改成「规则打基础分 -> 模型解释 -> guardrail 校验」，
-    直接在这里添加节点和边。
+    START -> parse_input -> score_projects -> validate_scores -> finalize -> END
     """
     from runner.langgraph_dependencies import import_langgraph_dependencies
-    from runner.runner import build_chat_model
     from tracing import Tracer
 
-    config = kwargs["config"]
     agent = kwargs["agent"]
     deps = import_langgraph_dependencies()
+    AIMessage = deps["AIMessage"]
     HumanMessage = deps["HumanMessage"]
-    SystemMessage = deps["SystemMessage"]
-    ChatOpenAI = deps["ChatOpenAI"]
     END = deps["END"]
     START = deps["START"]
     StateGraph = deps["StateGraph"]
-    AgentState = create_agent_state_schema(
-        deps["Annotated"],
-        deps["TypedDict"],
-        deps["add_messages"],
-    )
-
-    model = build_chat_model(ChatOpenAI, config)
+    Annotated = deps["Annotated"]
+    TypedDict = deps["TypedDict"]
+    add_messages = deps["add_messages"]
     tracer = agent.tracer or Tracer()
 
-    def call_model(state):
-        tracer.record("scoring_model_start", llm_calls=state.get("llm_calls", 0))
-        messages = [
-            SystemMessage(content=agent.system_prompt()),
-            *state["messages"],
-        ]
-        response = model.invoke(messages)
-        tracer.record("scoring_model_end")
+    class ScoringState(TypedDict, total=False):
+        messages: Annotated[list, add_messages]
+        llm_calls: int
+        requirements: dict[str, Any]
+        projects: list[dict[str, Any]]
+        metadata_projects: list[dict[str, Any]]
+        scores_json: str
+        validation: dict[str, Any]
+
+    def parse_input(state: ScoringState):
+        prompt = str(state["messages"][-1].content)
+        context = _extract_context(prompt)
+        requirements = _decode_json(context.get("RequirementAgent", {}))
+        projects = _decode_json(context.get("RepoAnalysisAgent", []))
+        metadata_projects = _decode_json(context.get("GitHubSearchAgent", []))
+
+        if not context:
+            direct = _decode_json(prompt)
+            if isinstance(direct, dict):
+                requirements = _decode_json(direct.get("RequirementAgent", {}))
+                projects = _decode_json(
+                    direct.get("RepoAnalysisAgent", direct.get("projects", []))
+                )
+                metadata_projects = _decode_json(
+                    direct.get("GitHubSearchAgent", direct.get("project_metadata", []))
+                )
+
+        tracer.record(
+            "scoring_parse_input",
+            project_count=len(projects) if isinstance(projects, list) else 0,
+        )
         return {
-            "messages": [response],
-            "llm_calls": state.get("llm_calls", 0) + 1,
+            "requirements": requirements if isinstance(requirements, dict) else {},
+            "projects": projects if isinstance(projects, list) else [],
+            "metadata_projects": (
+                metadata_projects if isinstance(metadata_projects, list) else []
+            ),
         }
 
-    graph_builder = StateGraph(AgentState)
-    graph_builder.add_node("agent", call_model)
-    graph_builder.add_edge(START, "agent")
-    graph_builder.add_edge("agent", END)
+    def calculate_scores(state: ScoringState):
+        tracer.record("scoring_rules_start")
+        scores_json = score_projects(
+            state.get("projects", []),
+            state.get("requirements", {}),
+            state.get("metadata_projects", []),
+        )
+        tracer.record("scoring_rules_end")
+        return {"scores_json": scores_json}
 
+    def validate_scores(state: ScoringState):
+        validation = json.loads(
+            validate_project_result(
+                state.get("scores_json", "[]"),
+                state.get("projects", []),
+            )
+        )
+        tracer.record(
+            "scoring_validation",
+            ok=validation["ok"],
+            error_count=len(validation["errors"]),
+            warning_count=len(validation["warnings"]),
+        )
+        return {"validation": validation}
+
+    def finalize(state: ScoringState):
+        validation = state.get("validation", {})
+        if not validation.get("ok", False):
+            payload = {
+                "error": "scoring_validation_failed",
+                "details": validation.get("errors", []),
+            }
+            output = json.dumps(payload, ensure_ascii=False, indent=2)
+        else:
+            output = state.get("scores_json", "[]")
+        return {"messages": [AIMessage(content=output)]}
+
+    graph_builder = StateGraph(ScoringState)
+    graph_builder.add_node("parse_input", parse_input)
+    graph_builder.add_node("score_projects", calculate_scores)
+    graph_builder.add_node("validate_scores", validate_scores)
+    graph_builder.add_node("finalize", finalize)
+    graph_builder.add_edge(START, "parse_input")
+    graph_builder.add_edge("parse_input", "score_projects")
+    graph_builder.add_edge("score_projects", "validate_scores")
+    graph_builder.add_edge("validate_scores", "finalize")
+    graph_builder.add_edge("finalize", END)
     return graph_builder.compile(), HumanMessage
 
 
 def create_scoring_agent(
     session: Session | None = None,
-    next_agent: str = "ReportAgent",
+    next_agent: str = "CriticAgent_ScoringAgent",
 ) -> Agent:
-    """创建评分 Agent。"""
+    """Create the deterministic scoring agent."""
     from guardrail.output_guardrails import STAGE_OUTPUT_GUARDRAILS
+
     from .agents import _make_handoff
 
     return Agent(
         name=AGENT_NAME,
         instructions=INSTRUCTIONS,
-        tools=ToolRegistry(tools=[]),
+        tools=ToolRegistry(
+            tools=[score_projects, validate_project_result]
+        ),
         handoffs=[_make_handoff(AGENT_NAME, next_agent)],
         output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),
         graph_factory=create_scoring_graph,
+        metadata={
+            "score_weights": {
+                "function_match": 30,
+                "deployment": 20,
+                "developer_friendliness": 20,
+                "community_activity": 15,
+                "documentation": 10,
+                "license_friendliness": 5,
+            }
+        },
     )

@@ -13,6 +13,14 @@ class RunResult:
     final_output: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Keep the multi-agent result contract stable on success and failure."""
+        self.metadata.setdefault("requirements", {})
+        self.metadata.setdefault("projects", [])
+        self.metadata.setdefault("scores", [])
+        self.metadata.setdefault("guardrail_warnings", [])
+        self.metadata.setdefault("agent_steps", [])
+
 
 @dataclass
 class DebugResult:
