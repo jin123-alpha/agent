@@ -22,20 +22,10 @@ from .guardrail import OutputGuardrail, OutputGuardrailResult
 def _try_parse_json_array(text: str) -> tuple[list | None, str]:
     """尝试解析 JSON 数组，支持 markdown 代码块包裹。返回 (parsed, error)。"""
     cleaned = text.strip()
-    # 去掉 markdown 代码块
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        json_lines = []
-        in_block = False
-        for line in lines:
-            if line.strip().startswith("```") and not in_block:
-                in_block = True
-                continue
-            elif line.strip().startswith("```") and in_block:
-                break
-            elif in_block:
-                json_lines.append(line)
-        cleaned = "\n".join(json_lines).strip()
+
+    fenced_match = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL)
+    if fenced_match:
+        cleaned = fenced_match.group(1).strip()
 
     try:
         parsed = json.loads(cleaned)
@@ -43,6 +33,15 @@ def _try_parse_json_array(text: str) -> tuple[list | None, str]:
             return None, "JSON 解析成功但不是数组类型"
         return parsed, ""
     except json.JSONDecodeError as e:
+        array_match = re.search(r"\[[\s\S]*\]", cleaned)
+        if array_match:
+            try:
+                parsed = json.loads(array_match.group(0))
+                if not isinstance(parsed, list):
+                    return None, "JSON 解析成功但不是数组类型"
+                return parsed, ""
+            except json.JSONDecodeError:
+                pass
         return None, f"JSON 解析失败: {e}"
 
 

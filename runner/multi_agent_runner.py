@@ -294,51 +294,19 @@ def run_multi_agent_pipeline(
 
         else:
             # ----- 普通 Agent → 先跑 OutputGuardrail（规则层） -----
-            guardrail_result = _run_output_guardrails(agent, agent_output, context_data)
+            while True:
+                guardrail_result = _run_output_guardrails(agent, agent_output, context_data)
+                if guardrail_result.ok:
+                    if agent.output_guardrails:
+                        pipeline_trace.append({
+                            "agent": agent_name,
+                            "status": "guardrail_passed",
+                        })
+                    break
 
-            if not guardrail_result.ok:
                 gr_retries = guardrail_retry_counts.get(agent_name, 0)
 
-                if gr_retries < MAX_GUARDRAIL_RETRIES:
-                    guardrail_retry_counts[agent_name] = gr_retries + 1
-                    feedback = guardrail_result.message
-
-                    pipeline_trace.append({
-                        "agent": agent_name,
-                        "status": "guardrail_retry_triggered",
-                        "retry_count": guardrail_retry_counts[agent_name],
-                        "failures": guardrail_result.failures,
-                    })
-
-                    if on_agent_end:
-                        on_agent_end(
-                            agent_name,
-                            f"🛡️ OutputGuardrail 未通过: {feedback}",
-                        )
-
-                    retry_prompt = _inject_retry_context(
-                        user_input, context_data, feedback,
-                        guardrail_retry_counts[agent_name],
-                        source="OutputGuardrail 规则校验",
-                    )
-
-                    if on_agent_start:
-                        on_agent_start(f"{agent_name} (规则重试 #{guardrail_retry_counts[agent_name]})")
-
-                    retry_output = _run_single_agent(
-                        agent, retry_prompt, config,
-                        max_tool_calls, on_tool_start, on_tool_end,
-                    )
-
-                    if on_agent_end:
-                        on_agent_end(agent_name, retry_output)
-
-                    # 用重试结果替换，但不前进 i，重新跑 guardrail
-                    agent_output = retry_output
-                    # 回到循环开头重新检查（这次用新输出）
-                    # 直接在此处重新检查 guardrail
-                    continue
-                else:
+                if gr_retries >= MAX_GUARDRAIL_RETRIES:
                     pipeline_trace.append({
                         "agent": agent_name,
                         "status": "guardrail_max_retries_reached",
@@ -350,12 +318,40 @@ def run_multi_agent_pipeline(
                             agent_name,
                             f"⚠️ OutputGuardrail 达到最大重试次数 ({MAX_GUARDRAIL_RETRIES})，继续",
                         )
-            else:
-                if agent.output_guardrails:
-                    pipeline_trace.append({
-                        "agent": agent_name,
-                        "status": "guardrail_passed",
-                    })
+                    break
+
+                guardrail_retry_counts[agent_name] = gr_retries + 1
+                feedback = guardrail_result.message
+
+                pipeline_trace.append({
+                    "agent": agent_name,
+                    "status": "guardrail_retry_triggered",
+                    "retry_count": guardrail_retry_counts[agent_name],
+                    "failures": guardrail_result.failures,
+                })
+
+                if on_agent_end:
+                    on_agent_end(
+                        agent_name,
+                        f"🛡️ OutputGuardrail 未通过: {feedback}",
+                    )
+
+                retry_prompt = _inject_retry_context(
+                    user_input, context_data, feedback,
+                    guardrail_retry_counts[agent_name],
+                    source="OutputGuardrail 规则校验",
+                )
+
+                if on_agent_start:
+                    on_agent_start(f"{agent_name} (规则重试 #{guardrail_retry_counts[agent_name]})")
+
+                agent_output = _run_single_agent(
+                    agent, retry_prompt, config,
+                    max_tool_calls, on_tool_start, on_tool_end,
+                )
+
+                if on_agent_end:
+                    on_agent_end(agent_name, agent_output)
 
             context_data[agent_name] = agent_output
 
@@ -483,41 +479,42 @@ def stream_multi_agent_events(
             context_data[agent_name] = agent_output
         else:
             # OutputGuardrail 检查
-            guardrail_result = _run_output_guardrails(agent, agent_output, context_data)
+            while True:
+                guardrail_result = _run_output_guardrails(agent, agent_output, context_data)
+                if guardrail_result.ok:
+                    break
 
-            if not guardrail_result.ok:
                 gr_retries = guardrail_retry_counts.get(agent_name, 0)
 
-                if gr_retries < MAX_GUARDRAIL_RETRIES:
-                    guardrail_retry_counts[agent_name] = gr_retries + 1
-
-                    yield StreamEvent(
-                        type="text",
-                        content=(
-                            f"\n🛡️ OutputGuardrail 未通过: {guardrail_result.message}\n"
-                            f"🔄 触发规则层第 {guardrail_retry_counts[agent_name]} 次重试...\n"
-                        ),
-                    )
-
-                    retry_prompt = _inject_retry_context(
-                        user_input, context_data, guardrail_result.message,
-                        guardrail_retry_counts[agent_name],
-                        source="OutputGuardrail 规则校验",
-                    )
-
-                    retry_output = _run_single_agent(
-                        agent, retry_prompt, config,
-                        max_tool_calls, on_tool_start, on_tool_end,
-                    )
-
-                    yield StreamEvent(type="text", content=retry_output)
-                    agent_output = retry_output
-                    continue
-                else:
+                if gr_retries >= MAX_GUARDRAIL_RETRIES:
                     yield StreamEvent(
                         type="text",
                         content=f"\n⚠️ OutputGuardrail 达到最大重试次数，继续\n",
                     )
+                    break
+
+                guardrail_retry_counts[agent_name] = gr_retries + 1
+
+                yield StreamEvent(
+                    type="text",
+                    content=(
+                        f"\n🛡️ OutputGuardrail 未通过: {guardrail_result.message}\n"
+                        f"🔄 触发规则层第 {guardrail_retry_counts[agent_name]} 次重试...\n"
+                    ),
+                )
+
+                retry_prompt = _inject_retry_context(
+                    user_input, context_data, guardrail_result.message,
+                    guardrail_retry_counts[agent_name],
+                    source="OutputGuardrail 规则校验",
+                )
+
+                agent_output = _run_single_agent(
+                    agent, retry_prompt, config,
+                    max_tool_calls, on_tool_start, on_tool_end,
+                )
+
+                yield StreamEvent(type="text", content=agent_output)
 
             context_data[agent_name] = agent_output
 
