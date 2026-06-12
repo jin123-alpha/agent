@@ -12,6 +12,10 @@ ToolCallback = Callable[[str], None]
 
 
 def build_model(ChatOpenAI, langchain_tools, config: dict):
+    return build_chat_model(ChatOpenAI, config).bind_tools(langchain_tools)
+
+
+def build_chat_model(ChatOpenAI, config: dict):
     model_options = {
         "model": config["model"],
         "api_key": config["api_key"],
@@ -20,10 +24,36 @@ def build_model(ChatOpenAI, langchain_tools, config: dict):
     if config["base_url"]:
         model_options["base_url"] = config["base_url"]
 
-    return ChatOpenAI(**model_options).bind_tools(langchain_tools)
+    return ChatOpenAI(**model_options)
 
 
 def create_agent_graph(
+    config: dict,
+    max_tool_calls: int = 10,
+    agent: Agent | None = None,
+    on_tool_start: ToolCallback | None = None,
+    on_tool_end: ToolCallback | None = None,
+):
+    agent = agent or create_default_agent()
+    if agent.graph_factory is not None:
+        return agent.graph_factory(
+            config=config,
+            max_tool_calls=max_tool_calls,
+            agent=agent,
+            on_tool_start=on_tool_start,
+            on_tool_end=on_tool_end,
+        )
+
+    return create_react_agent_graph(
+        config=config,
+        max_tool_calls=max_tool_calls,
+        agent=agent,
+        on_tool_start=on_tool_start,
+        on_tool_end=on_tool_end,
+    )
+
+
+def create_react_agent_graph(
     config: dict,
     max_tool_calls: int = 10,
     agent: Agent | None = None,
@@ -112,6 +142,53 @@ def create_agent_graph(
     graph_builder.add_edge(START, "agent")
     graph_builder.add_conditional_edges("agent", should_continue, ["tools", END])
     graph_builder.add_edge("tools", "agent")
+
+    return graph_builder.compile(), HumanMessage
+
+
+def create_model_only_agent_graph(
+    config: dict,
+    max_tool_calls: int = 10,
+    agent: Agent | None = None,
+    on_tool_start: ToolCallback | None = None,
+    on_tool_end: ToolCallback | None = None,
+):
+    agent = agent or create_default_agent()
+    deps = import_langgraph_dependencies()
+    HumanMessage = deps["HumanMessage"]
+    SystemMessage = deps["SystemMessage"]
+    ChatOpenAI = deps["ChatOpenAI"]
+    END = deps["END"]
+    START = deps["START"]
+    StateGraph = deps["StateGraph"]
+    add_messages = deps["add_messages"]
+    Annotated = deps["Annotated"]
+    TypedDict = deps["TypedDict"]
+
+    class AgentState(TypedDict):
+        messages: Annotated[list, add_messages]
+        llm_calls: int
+
+    model = build_chat_model(ChatOpenAI, config)
+    tracer = agent.tracer or Tracer()
+
+    def call_model(state: AgentState):
+        tracer.record("model_only_start", llm_calls=state.get("llm_calls", 0))
+        messages = [
+            SystemMessage(content=agent.system_prompt()),
+            *state["messages"],
+        ]
+        response = model.invoke(messages)
+        tracer.record("model_only_end")
+        return {
+            "messages": [response],
+            "llm_calls": state.get("llm_calls", 0) + 1,
+        }
+
+    graph_builder = StateGraph(AgentState)
+    graph_builder.add_node("agent", call_model)
+    graph_builder.add_edge(START, "agent")
+    graph_builder.add_edge("agent", END)
 
     return graph_builder.compile(), HumanMessage
 

@@ -1,6 +1,6 @@
-# Simple Tool Agent
+# Github search-report Agent
 
-这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。项目按 Agent、Runner、Tools、Handoff、Guardrail、Session、Tracing、Result 分层；`runner/` 负责构建 `StateGraph` 并管理循环，`run.py` 只负责终端入口调度，终端打印放在 `result/`。`tools/` 目录负责放置具体工具函数和工具注册适配。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
+这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。项目按 Agent、Runner、Tools、Handoff、Guardrail、Session、Tracing、Result 分层；每个具体 Agent 文件负责定义自己的 `StateGraph` 流程，`runner/` 负责调用对应 graph 并管理执行循环，`run.py` 只负责终端入口调度，终端打印放在 `result/`。`tools/` 目录负责放置具体工具函数和工具注册适配。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
 
 ## 文件结构
 
@@ -83,13 +83,101 @@ TOOLS = [
 ## 架构分层
 
 - `agent/`：描述 Agent 的名称、指令、工具、handoff、guardrail、session 和 tracing 能力。
-- `runner/`：管理 LangGraph 执行循环，构建模型节点、工具节点、条件边和流式事件。
+- `runner/`：调用各 Agent 自己的 LangGraph，并管理执行循环和流式事件。
 - `tools/`：保存具体工具函数，并把它们适配成 LangChain 工具。
 - `handoff/`：预留多 Agent 协作路由接口。
 - `guardrail/`：预留输入、输出或工具调用的安全和质量检查接口。
 - `session/`：封装长期记忆的读取和写入接口。
 - `tracing/`：记录轻量调试事件。
 - `result/`：定义 `RunResult` 和 `StreamEvent` 等结构化返回类型，并集中处理终端打印。
+
+## Agent Graph 定制
+
+默认情况下，`runner.create_agent_graph()` 会读取 `Agent.graph_factory`。每个具体 Agent 文件都定义自己的 graph factory，并在该文件中直接声明 `StateGraph`、node、edge 和条件路由；未来要改某个 Agent 的执行流程，只需要改对应文件。
+
+例如 [agent/github_search_agent.py](agent/github_search_agent.py) 中：
+
+```python
+def create_github_search_graph(**kwargs):
+    deps = import_langgraph_dependencies()
+    StateGraph = deps["StateGraph"]
+    START = deps["START"]
+    END = deps["END"]
+
+    def call_model(state):
+        ...
+
+    def call_tools(state):
+        ...
+
+    def should_continue(state):
+        ...
+
+    graph_builder = StateGraph(AgentState)
+    graph_builder.add_node("agent", call_model)
+    graph_builder.add_node("tools", call_tools)
+    graph_builder.add_edge(START, "agent")
+    graph_builder.add_conditional_edges("agent", should_continue, ["tools", END])
+    graph_builder.add_edge("tools", "agent")
+    return graph_builder.compile(), HumanMessage
+```
+
+然后在创建 Agent 时绑定：
+
+```python
+return Agent(
+    name=AGENT_NAME,
+    instructions=INSTRUCTIONS,
+    graph_factory=create_github_search_graph,
+)
+```
+
+当前约定：
+
+- `RequirementAgent`：`create_requirement_graph`，默认 model-only。
+- `GitHubSearchAgent`：`create_github_search_graph`，默认 ReAct tools graph。
+- `RepoAnalysisAgent`：`create_repo_analysis_graph`，默认 ReAct tools graph。
+- `ScoringAgent`：`create_scoring_graph`，默认 model-only。
+- `ReportAgent`：`create_report_graph`，默认 model-only。
+- `CriticAgent_*`：`create_critic_graph`，默认 ReAct tools graph，保留 `web_search` 核查能力。
+
+`graph_factory` 接收 `config`、`max_tool_calls`、`agent`、`on_tool_start`、`on_tool_end` 参数，并返回 `(graph, HumanMessage)`。
+
+## 单 Agent 调试
+
+`runner.run_single_agent_debug()` 可用于单独测试某个 Agent。输入可以由自定义 mock 函数生成 JSON；也可以传入 `mock_output_factory` 跳过真实 LLM 调用，只测试 OutputGuardrail 或 Critic 流程。
+
+直接运行默认 mock 调试：
+
+```bash
+python test.py
+```
+
+指定 Agent 并启用 OutputGuardrail：
+
+```bash
+python test.py --agent RepoAnalysisAgent --guardrail
+```
+
+跳过 mock output、调用真实模型图：
+
+```bash
+python test.py --agent GitHubSearchAgent --real-agent
+```
+
+接入 CriticAgent 做语义审查：
+
+```bash
+python test.py --agent GitHubSearchAgent --critic
+```
+
+调试链路支持：
+
+- 只跑单个 Agent
+- 使用 mock JSON 输入
+- 使用 mock output 跳过真实模型
+- 可选接 OutputGuardrail
+- 可选接 CriticAgent 做语义审查
 
 ## 长期记忆
 

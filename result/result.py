@@ -12,3 +12,13 @@ class StreamEvent:
 class RunResult:
     final_output: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DebugResult:
+    agent_name: str
+    input_data: Any
+    output: str
+    output_guardrail_result: Any | None = None
+    critic_output: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

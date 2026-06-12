@@ -52,6 +52,61 @@ INSTRUCTIONS = """\
 """
 
 
+def create_report_graph(**kwargs):
+    """
+    ReportAgent 的独立 LangGraph 流程。
+
+    当前流程：
+    START -> agent -> END
+
+    以后如果报告生成要加入「生成草稿 -> 补证据 -> 输出 Markdown」
+    等步骤，直接在本函数扩展。
+    """
+    from runner.langgraph_dependencies import import_langgraph_dependencies
+    from runner.runner import build_chat_model
+    from tracing import Tracer
+
+    config = kwargs["config"]
+    agent = kwargs["agent"]
+    deps = import_langgraph_dependencies()
+    HumanMessage = deps["HumanMessage"]
+    SystemMessage = deps["SystemMessage"]
+    ChatOpenAI = deps["ChatOpenAI"]
+    END = deps["END"]
+    START = deps["START"]
+    StateGraph = deps["StateGraph"]
+    add_messages = deps["add_messages"]
+    Annotated = deps["Annotated"]
+    TypedDict = deps["TypedDict"]
+
+    class AgentState(TypedDict):
+        messages: Annotated[list, add_messages]
+        llm_calls: int
+
+    model = build_chat_model(ChatOpenAI, config)
+    tracer = agent.tracer or Tracer()
+
+    def call_model(state: AgentState):
+        tracer.record("report_model_start", llm_calls=state.get("llm_calls", 0))
+        messages = [
+            SystemMessage(content=agent.system_prompt()),
+            *state["messages"],
+        ]
+        response = model.invoke(messages)
+        tracer.record("report_model_end")
+        return {
+            "messages": [response],
+            "llm_calls": state.get("llm_calls", 0) + 1,
+        }
+
+    graph_builder = StateGraph(AgentState)
+    graph_builder.add_node("agent", call_model)
+    graph_builder.add_edge(START, "agent")
+    graph_builder.add_edge("agent", END)
+
+    return graph_builder.compile(), HumanMessage
+
+
 def create_report_agent(session: Session | None = None) -> Agent:
     """创建报告生成 Agent。"""
     from guardrail.output_guardrails import STAGE_OUTPUT_GUARDRAILS
@@ -63,5 +118,5 @@ def create_report_agent(session: Session | None = None) -> Agent:
         handoffs=[],  # 流水线最后一个，无 handoff
         output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),
+        graph_factory=create_report_graph,
     )
-

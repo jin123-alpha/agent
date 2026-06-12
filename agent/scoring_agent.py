@@ -49,6 +49,61 @@ INSTRUCTIONS = """\
 """
 
 
+def create_scoring_graph(**kwargs):
+    """
+    ScoringAgent 的独立 LangGraph 流程。
+
+    当前流程：
+    START -> agent -> END
+
+    以后如果评分要改成「规则打基础分 -> 模型解释 -> guardrail 校验」，
+    直接在这里添加节点和边。
+    """
+    from runner.langgraph_dependencies import import_langgraph_dependencies
+    from runner.runner import build_chat_model
+    from tracing import Tracer
+
+    config = kwargs["config"]
+    agent = kwargs["agent"]
+    deps = import_langgraph_dependencies()
+    HumanMessage = deps["HumanMessage"]
+    SystemMessage = deps["SystemMessage"]
+    ChatOpenAI = deps["ChatOpenAI"]
+    END = deps["END"]
+    START = deps["START"]
+    StateGraph = deps["StateGraph"]
+    add_messages = deps["add_messages"]
+    Annotated = deps["Annotated"]
+    TypedDict = deps["TypedDict"]
+
+    class AgentState(TypedDict):
+        messages: Annotated[list, add_messages]
+        llm_calls: int
+
+    model = build_chat_model(ChatOpenAI, config)
+    tracer = agent.tracer or Tracer()
+
+    def call_model(state: AgentState):
+        tracer.record("scoring_model_start", llm_calls=state.get("llm_calls", 0))
+        messages = [
+            SystemMessage(content=agent.system_prompt()),
+            *state["messages"],
+        ]
+        response = model.invoke(messages)
+        tracer.record("scoring_model_end")
+        return {
+            "messages": [response],
+            "llm_calls": state.get("llm_calls", 0) + 1,
+        }
+
+    graph_builder = StateGraph(AgentState)
+    graph_builder.add_node("agent", call_model)
+    graph_builder.add_edge(START, "agent")
+    graph_builder.add_edge("agent", END)
+
+    return graph_builder.compile(), HumanMessage
+
+
 def create_scoring_agent(
     session: Session | None = None,
     next_agent: str = "ReportAgent",
@@ -64,5 +119,5 @@ def create_scoring_agent(
         handoffs=[_make_handoff(AGENT_NAME, next_agent)],
         output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),
+        graph_factory=create_scoring_graph,
     )
-

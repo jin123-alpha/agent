@@ -32,6 +32,61 @@ INSTRUCTIONS = """\
 """
 
 
+def create_requirement_graph(**kwargs):
+    """
+    RequirementAgent 的独立 LangGraph 流程。
+
+    当前流程：
+    START -> agent -> END
+
+    如果未来需求解析需要增加 JSON 修复、字段补全、critic 节点，
+    直接在本函数里添加 node / edge 即可，不需要修改其他 agent。
+    """
+    from runner.langgraph_dependencies import import_langgraph_dependencies
+    from runner.runner import build_chat_model
+    from tracing import Tracer
+
+    config = kwargs["config"]
+    agent = kwargs["agent"]
+    deps = import_langgraph_dependencies()
+    HumanMessage = deps["HumanMessage"]
+    SystemMessage = deps["SystemMessage"]
+    ChatOpenAI = deps["ChatOpenAI"]
+    END = deps["END"]
+    START = deps["START"]
+    StateGraph = deps["StateGraph"]
+    add_messages = deps["add_messages"]
+    Annotated = deps["Annotated"]
+    TypedDict = deps["TypedDict"]
+
+    class AgentState(TypedDict):
+        messages: Annotated[list, add_messages]
+        llm_calls: int
+
+    model = build_chat_model(ChatOpenAI, config)
+    tracer = agent.tracer or Tracer()
+
+    def call_model(state: AgentState):
+        tracer.record("requirement_model_start", llm_calls=state.get("llm_calls", 0))
+        messages = [
+            SystemMessage(content=agent.system_prompt()),
+            *state["messages"],
+        ]
+        response = model.invoke(messages)
+        tracer.record("requirement_model_end")
+        return {
+            "messages": [response],
+            "llm_calls": state.get("llm_calls", 0) + 1,
+        }
+
+    graph_builder = StateGraph(AgentState)
+    graph_builder.add_node("agent", call_model)
+    graph_builder.add_edge(START, "agent")
+    graph_builder.add_edge("agent", END)
+
+    return graph_builder.compile(), HumanMessage
+
+
 def create_requirement_agent(
     session: Session | None = None,
     next_agent: str = "GitHubSearchAgent",
@@ -45,4 +100,5 @@ def create_requirement_agent(
         tools=ToolRegistry(tools=[]),
         handoffs=[_make_handoff(AGENT_NAME, next_agent)],
         session=session or Session(),
+        graph_factory=create_requirement_graph,
     )
