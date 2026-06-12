@@ -1,6 +1,6 @@
 def import_langgraph_dependencies():
     try:
-        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
         from langchain_core.tools import StructuredTool
         from langchain_openai import ChatOpenAI
         from langgraph.graph import END, START, StateGraph, add_messages
@@ -12,6 +12,7 @@ def import_langgraph_dependencies():
         ) from exc
 
     return {
+        "AIMessage": AIMessage,
         "HumanMessage": HumanMessage,
         "SystemMessage": SystemMessage,
         "ToolMessage": ToolMessage,

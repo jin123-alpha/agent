@@ -3,3 +3,4 @@ __pycache__/
 data/memory.json
 config.json
 handoff*
+all-mpnet-base-v2
