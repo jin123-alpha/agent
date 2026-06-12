@@ -25,6 +25,8 @@ from .config import load_config
 from .runner import build_initial_state, check_guardrails, create_agent_graph
 
 ToolCallback = Callable[[str], None]
+MAX_GUARDRAIL_RETRIES = 2
+MAX_CRITIC_FORMAT_RETRIES = 2
 
 
 def _inject_context(user_input: str, context_data: dict[str, Any]) -> str:
@@ -79,6 +81,32 @@ def _get_reviewed_stage(critic_name: str) -> str:
     return critic_name[len(AGENT_CRITIC) + 1 :]
 
 
+def _rollback_context_from_stage(
+    context_data: dict[str, Any],
+    stage_name: str,
+    preserve_keys: set[str] | None = None,
+) -> None:
+    """清理被回退阶段及下游上下文，保留明确指定的错误反馈。"""
+    preserve_keys = preserve_keys or set()
+    if stage_name not in AGENT_PIPELINE:
+        return
+
+    stage_index = AGENT_PIPELINE.index(stage_name)
+    affected_names = AGENT_PIPELINE[stage_index:]
+    keys_to_remove = set(affected_names)
+
+    for name in affected_names:
+        keys_to_remove.add(f"{name}_feedback")
+        keys_to_remove.add(f"{name}_format_feedback")
+
+    for key in keys_to_remove - preserve_keys:
+        context_data.pop(key, None)
+
+
+def _is_critic_format_error(critic_result: dict[str, Any]) -> bool:
+    return critic_result.get("error_type") == "critic_format"
+
+
 def _parse_critic_result(critic_output: str) -> dict[str, Any]:
     """解析 Critic 的 JSON 输出。"""
     try:
@@ -94,6 +122,7 @@ def _parse_critic_result(critic_output: str) -> dict[str, Any]:
         if not isinstance(parsed, dict):
             return {
                 "passed": False,
+                "error_type": "critic_format",
                 "overall_comment": "Critic 输出不是 JSON 对象，不能视为通过",
                 "retry_suggestion": "请只输出 Critic 审查 JSON，并包含 passed 字段。",
             }
@@ -101,15 +130,18 @@ def _parse_critic_result(critic_output: str) -> dict[str, Any]:
         if not isinstance(parsed.get("passed"), bool):
             return {
                 "passed": False,
+                "error_type": "critic_format",
                 "overall_comment": "Critic 输出缺少布尔 passed 字段，不能视为通过",
                 "retry_suggestion": "请根据审查清单输出包含 passed、checks、evidence_issues、overall_comment、retry_suggestion 的严格 JSON。",
                 "raw_output": parsed,
             }
 
+        parsed.setdefault("error_type", "semantic")
         return parsed
     except (json.JSONDecodeError, ValueError):
         return {
             "passed": False,
+            "error_type": "critic_format",
             "overall_comment": "Critic 输出解析失败，不能视为通过",
             "retry_suggestion": "请只输出严格 JSON，不要输出工具结果、Markdown 说明或其他文本。",
         }
@@ -152,6 +184,127 @@ def _run_output_guardrails(
     return OutputGuardrailResult(ok=True)
 
 
+def _build_guardrail_block_result(
+    agent_name: str,
+    guardrail_result: OutputGuardrailResult,
+    retry_count: int,
+    pipeline_trace: list[dict[str, Any]],
+    context_data: dict[str, Any],
+    retry_counts: dict[str, int],
+    guardrail_retry_counts: dict[str, int],
+) -> RunResult:
+    message = (
+        f"OutputGuardrail 未通过，且达到最大重试次数 ({MAX_GUARDRAIL_RETRIES})，"
+        "流水线停止。"
+    )
+    pipeline_trace.append({
+        "agent": agent_name,
+        "status": "guardrail_max_retries_reached",
+        "retry_count": retry_count,
+        "failures": guardrail_result.failures,
+    })
+    return RunResult(
+        final_output=message,
+        metadata={
+            "blocked_by_output_guardrail": True,
+            "blocked_agent": agent_name,
+            "failures": guardrail_result.failures,
+            "pipeline_trace": pipeline_trace,
+            "agent_outputs": context_data,
+            "retry_counts": retry_counts,
+            "guardrail_retry_counts": guardrail_retry_counts,
+        },
+    )
+
+
+def _validate_agent_output_with_guardrails(
+    agent_name: str,
+    agent: Agent,
+    agent_output: str,
+    user_input: str,
+    context_data: dict[str, Any],
+    config: dict,
+    max_tool_calls: int,
+    on_tool_start: ToolCallback | None,
+    on_tool_end: ToolCallback | None,
+    on_agent_start: Callable[[str], None] | None,
+    on_agent_end: Callable[[str, str], None] | None,
+    pipeline_trace: list[dict[str, Any]],
+    retry_counts: dict[str, int],
+    guardrail_retry_counts: dict[str, int],
+) -> tuple[str, RunResult | None]:
+    """Validate one agent output. Retry locally; block if rules still fail."""
+    while True:
+        guardrail_result = _run_output_guardrails(agent, agent_output, context_data)
+        if guardrail_result.ok:
+            if agent.output_guardrails:
+                pipeline_trace.append({
+                    "agent": agent_name,
+                    "status": "guardrail_passed",
+                })
+            return agent_output, None
+
+        gr_retries = guardrail_retry_counts.get(agent_name, 0)
+
+        if gr_retries >= MAX_GUARDRAIL_RETRIES:
+            if on_agent_end:
+                on_agent_end(
+                    agent_name,
+                    f"⚠️ OutputGuardrail 达到最大重试次数 ({MAX_GUARDRAIL_RETRIES})，流水线停止",
+                )
+            return (
+                agent_output,
+                _build_guardrail_block_result(
+                    agent_name,
+                    guardrail_result,
+                    gr_retries,
+                    pipeline_trace,
+                    context_data,
+                    retry_counts,
+                    guardrail_retry_counts,
+                ),
+            )
+
+        guardrail_retry_counts[agent_name] = gr_retries + 1
+        feedback = guardrail_result.message
+
+        pipeline_trace.append({
+            "agent": agent_name,
+            "status": "guardrail_retry_triggered",
+            "retry_count": guardrail_retry_counts[agent_name],
+            "failures": guardrail_result.failures,
+        })
+
+        if on_agent_end:
+            on_agent_end(
+                agent_name,
+                f"🛡️ OutputGuardrail 未通过: {feedback}",
+            )
+
+        retry_prompt = _inject_retry_context(
+            user_input,
+            context_data,
+            feedback,
+            guardrail_retry_counts[agent_name],
+            source="OutputGuardrail 规则校验",
+        )
+
+        if on_agent_start:
+            on_agent_start(f"{agent_name} (规则重试 #{guardrail_retry_counts[agent_name]})")
+
+        agent_output = _run_single_agent(
+            agent,
+            retry_prompt,
+            config,
+            max_tool_calls,
+            on_tool_start,
+            on_tool_end,
+        )
+
+        if on_agent_end:
+            on_agent_end(agent_name, agent_output)
+
+
 # ---------------------------------------------------------------------------
 # 阻塞式流水线
 # ---------------------------------------------------------------------------
@@ -185,7 +338,7 @@ def run_multi_agent_pipeline(
     retry_counts: dict[str, int] = {}
     # 区分规则层重试和语义层重试
     guardrail_retry_counts: dict[str, int] = {}
-    MAX_GUARDRAIL_RETRIES = 2
+    critic_format_retry_counts: dict[str, int] = {}
 
     while i < len(AGENT_PIPELINE):
         agent_name = AGENT_PIPELINE[i]
@@ -233,6 +386,82 @@ def run_multi_agent_pipeline(
             reviewed_stage = _get_reviewed_stage(agent_name)
             critic_result = _parse_critic_result(agent_output)
 
+            while _is_critic_format_error(critic_result):
+                current_format_retries = critic_format_retry_counts.get(agent_name, 0)
+                if current_format_retries >= MAX_CRITIC_FORMAT_RETRIES:
+                    message = (
+                        f"Critic 输出格式无效，且达到最大重试次数 "
+                        f"({MAX_CRITIC_FORMAT_RETRIES})，流水线停止。"
+                    )
+                    pipeline_trace.append({
+                        "agent": agent_name,
+                        "status": "critic_format_max_retries_reached",
+                        "retry_count": current_format_retries,
+                        "feedback": critic_result.get("overall_comment", ""),
+                    })
+                    if on_agent_end:
+                        on_agent_end(agent_name, f"⚠️ {message}")
+                    return RunResult(
+                        final_output=message,
+                        metadata={
+                            "blocked_by_critic_format": True,
+                            "blocked_agent": agent_name,
+                            "reviewed_stage": reviewed_stage,
+                            "pipeline_trace": pipeline_trace,
+                            "agent_outputs": context_data,
+                            "retry_counts": retry_counts,
+                            "guardrail_retry_counts": guardrail_retry_counts,
+                            "critic_format_retry_counts": critic_format_retry_counts,
+                        },
+                    )
+
+                critic_format_retry_counts[agent_name] = current_format_retries + 1
+                feedback = critic_result.get(
+                    "retry_suggestion",
+                    critic_result.get("overall_comment", "请输出严格 Critic 审查 JSON"),
+                )
+                context_data[f"{agent_name}_format_feedback"] = feedback
+
+                pipeline_trace.append({
+                    "agent": agent_name,
+                    "status": "critic_format_retry_triggered",
+                    "retry_count": critic_format_retry_counts[agent_name],
+                    "feedback": feedback,
+                })
+
+                if on_agent_end:
+                    on_agent_end(
+                        agent_name,
+                        f"🧪 Critic 输出格式无效，触发第 {critic_format_retry_counts[agent_name]} 次 Critic 重试",
+                    )
+
+                retry_prompt = _inject_retry_context(
+                    user_input,
+                    context_data,
+                    feedback,
+                    critic_format_retry_counts[agent_name],
+                    source="Critic 输出格式校验",
+                )
+
+                if on_agent_start:
+                    on_agent_start(f"{agent_name} (格式重试 #{critic_format_retry_counts[agent_name]})")
+
+                agent_output = _run_single_agent(
+                    agent,
+                    retry_prompt,
+                    config,
+                    max_tool_calls,
+                    on_tool_start,
+                    on_tool_end,
+                )
+
+                if on_agent_end:
+                    on_agent_end(agent_name, agent_output)
+
+                critic_result = _parse_critic_result(agent_output)
+
+            context_data.pop(f"{agent_name}_format_feedback", None)
+
             if not critic_result.get("passed", True):
                 current_retries = retry_counts.get(reviewed_stage, 0)
                 max_retries = agent.metadata.get("max_retries", 2)
@@ -257,7 +486,9 @@ def run_multi_agent_pipeline(
                             f"❌ Critic 审查未通过，触发第 {retry_counts[reviewed_stage]} 次重试",
                         )
 
-                    context_data[f"{agent_name}_feedback"] = feedback
+                    feedback_key = f"{agent_name}_feedback"
+                    _rollback_context_from_stage(context_data, reviewed_stage)
+                    context_data[feedback_key] = feedback
 
                     retry_prompt = _inject_retry_context(
                         user_input, context_data, feedback,
@@ -277,6 +508,27 @@ def run_multi_agent_pipeline(
                     if on_agent_end:
                         on_agent_end(reviewed_stage, retry_output)
 
+                    # Critic 触发的重试仍然必须重新经过被审查 Agent 的规则层校验。
+                    guardrail_retry_counts.pop(reviewed_stage, None)
+                    retry_output, blocked_result = _validate_agent_output_with_guardrails(
+                        reviewed_stage,
+                        reviewed_agent,
+                        retry_output,
+                        user_input,
+                        context_data,
+                        config,
+                        max_tool_calls,
+                        on_tool_start,
+                        on_tool_end,
+                        on_agent_start,
+                        on_agent_end,
+                        pipeline_trace,
+                        retry_counts,
+                        guardrail_retry_counts,
+                    )
+                    if blocked_result is not None:
+                        return blocked_result
+
                     context_data[reviewed_stage] = retry_output
 
                     pipeline_trace.append({
@@ -286,8 +538,6 @@ def run_multi_agent_pipeline(
                         "output_length": len(retry_output),
                     })
 
-                    # 重置规则层重试计数（重新跑过的输出需要重新验证）
-                    guardrail_retry_counts.pop(reviewed_stage, None)
                     # 不前进 i，重新执行 Critic
                     continue
                 else:
@@ -312,9 +562,11 @@ def run_multi_agent_pipeline(
                             "agent_outputs": context_data,
                             "retry_counts": retry_counts,
                             "guardrail_retry_counts": guardrail_retry_counts,
+                            "critic_format_retry_counts": critic_format_retry_counts,
                         },
                     )
             else:
+                context_data.pop(f"{agent_name}_feedback", None)
                 pipeline_trace.append({
                     "agent": agent_name,
                     "status": "critic_passed",
@@ -324,64 +576,24 @@ def run_multi_agent_pipeline(
 
         else:
             # ----- 普通 Agent → 先跑 OutputGuardrail（规则层） -----
-            while True:
-                guardrail_result = _run_output_guardrails(agent, agent_output, context_data)
-                if guardrail_result.ok:
-                    if agent.output_guardrails:
-                        pipeline_trace.append({
-                            "agent": agent_name,
-                            "status": "guardrail_passed",
-                        })
-                    break
-
-                gr_retries = guardrail_retry_counts.get(agent_name, 0)
-
-                if gr_retries >= MAX_GUARDRAIL_RETRIES:
-                    pipeline_trace.append({
-                        "agent": agent_name,
-                        "status": "guardrail_max_retries_reached",
-                        "retry_count": gr_retries,
-                        "failures": guardrail_result.failures,
-                    })
-                    if on_agent_end:
-                        on_agent_end(
-                            agent_name,
-                            f"⚠️ OutputGuardrail 达到最大重试次数 ({MAX_GUARDRAIL_RETRIES})，继续",
-                        )
-                    break
-
-                guardrail_retry_counts[agent_name] = gr_retries + 1
-                feedback = guardrail_result.message
-
-                pipeline_trace.append({
-                    "agent": agent_name,
-                    "status": "guardrail_retry_triggered",
-                    "retry_count": guardrail_retry_counts[agent_name],
-                    "failures": guardrail_result.failures,
-                })
-
-                if on_agent_end:
-                    on_agent_end(
-                        agent_name,
-                        f"🛡️ OutputGuardrail 未通过: {feedback}",
-                    )
-
-                retry_prompt = _inject_retry_context(
-                    user_input, context_data, feedback,
-                    guardrail_retry_counts[agent_name],
-                    source="OutputGuardrail 规则校验",
-                )
-
-                if on_agent_start:
-                    on_agent_start(f"{agent_name} (规则重试 #{guardrail_retry_counts[agent_name]})")
-
-                agent_output = _run_single_agent(
-                    agent, retry_prompt, config,
-                    max_tool_calls, on_tool_start, on_tool_end,
-                )
-
-                if on_agent_end:
-                    on_agent_end(agent_name, agent_output)
+            agent_output, blocked_result = _validate_agent_output_with_guardrails(
+                agent_name,
+                agent,
+                agent_output,
+                user_input,
+                context_data,
+                config,
+                max_tool_calls,
+                on_tool_start,
+                on_tool_end,
+                on_agent_start,
+                on_agent_end,
+                pipeline_trace,
+                retry_counts,
+                guardrail_retry_counts,
+            )
+            if blocked_result is not None:
+                return blocked_result
 
             context_data[agent_name] = agent_output
 
@@ -414,6 +626,7 @@ def run_multi_agent_pipeline(
             "agent_outputs": context_data,
             "retry_counts": retry_counts,
             "guardrail_retry_counts": guardrail_retry_counts,
+            "critic_format_retry_counts": critic_format_retry_counts,
         },
     )
 
@@ -438,7 +651,7 @@ def stream_multi_agent_events(
     context_data: dict[str, Any] = {}
     retry_counts: dict[str, int] = {}
     guardrail_retry_counts: dict[str, int] = {}
-    MAX_GUARDRAIL_RETRIES = 2
+    critic_format_retry_counts: dict[str, int] = {}
 
     i = 0
     while i < len(AGENT_PIPELINE):
@@ -467,6 +680,55 @@ def stream_multi_agent_events(
             reviewed_stage = _get_reviewed_stage(agent_name)
             critic_result = _parse_critic_result(agent_output)
 
+            while _is_critic_format_error(critic_result):
+                current_format_retries = critic_format_retry_counts.get(agent_name, 0)
+                if current_format_retries >= MAX_CRITIC_FORMAT_RETRIES:
+                    yield StreamEvent(
+                        type="text",
+                        content=(
+                            f"\n⚠️ Critic 输出格式无效，且达到最大重试次数 "
+                            f"({MAX_CRITIC_FORMAT_RETRIES})，流水线停止。\n"
+                        ),
+                    )
+                    return
+
+                critic_format_retry_counts[agent_name] = current_format_retries + 1
+                feedback = critic_result.get(
+                    "retry_suggestion",
+                    critic_result.get("overall_comment", "请输出严格 Critic 审查 JSON"),
+                )
+                context_data[f"{agent_name}_format_feedback"] = feedback
+
+                yield StreamEvent(
+                    type="text",
+                    content=(
+                        f"\n🧪 Critic 输出格式无效，"
+                        f"触发第 {critic_format_retry_counts[agent_name]} 次 Critic 重试...\n"
+                    ),
+                )
+
+                retry_prompt = _inject_retry_context(
+                    user_input,
+                    context_data,
+                    feedback,
+                    critic_format_retry_counts[agent_name],
+                    source="Critic 输出格式校验",
+                )
+
+                agent_output = _run_single_agent(
+                    agent,
+                    retry_prompt,
+                    config,
+                    max_tool_calls,
+                    on_tool_start,
+                    on_tool_end,
+                )
+
+                yield StreamEvent(type="text", content=agent_output)
+                critic_result = _parse_critic_result(agent_output)
+
+            context_data.pop(f"{agent_name}_format_feedback", None)
+
             if not critic_result.get("passed", True):
                 current_retries = retry_counts.get(reviewed_stage, 0)
                 max_retries = agent.metadata.get("max_retries", 2)
@@ -477,7 +739,9 @@ def stream_multi_agent_events(
                         "retry_suggestion",
                         critic_result.get("overall_comment", "请修正输出"),
                     )
-                    context_data[f"{agent_name}_feedback"] = feedback
+                    feedback_key = f"{agent_name}_feedback"
+                    _rollback_context_from_stage(context_data, reviewed_stage)
+                    context_data[feedback_key] = feedback
 
                     yield StreamEvent(
                         type="text",
@@ -495,10 +759,60 @@ def stream_multi_agent_events(
                         reviewed_agent, retry_prompt, config,
                         max_tool_calls, on_tool_start, on_tool_end,
                     )
-                    context_data[reviewed_stage] = retry_output
-                    guardrail_retry_counts.pop(reviewed_stage, None)
-
                     yield StreamEvent(type="text", content=retry_output)
+
+                    guardrail_retry_counts.pop(reviewed_stage, None)
+                    while True:
+                        guardrail_result = _run_output_guardrails(
+                            reviewed_agent,
+                            retry_output,
+                            context_data,
+                        )
+                        if guardrail_result.ok:
+                            break
+
+                        gr_retries = guardrail_retry_counts.get(reviewed_stage, 0)
+                        if gr_retries >= MAX_GUARDRAIL_RETRIES:
+                            yield StreamEvent(
+                                type="text",
+                                content=(
+                                    f"\n⚠️ OutputGuardrail 未通过，且达到最大重试次数 "
+                                    f"({MAX_GUARDRAIL_RETRIES})，流水线停止。\n"
+                                ),
+                            )
+                            return
+
+                        guardrail_retry_counts[reviewed_stage] = gr_retries + 1
+                        yield StreamEvent(
+                            type="text",
+                            content=(
+                                f"\n🛡️ Critic 重试输出未通过 OutputGuardrail: "
+                                f"{guardrail_result.message}\n"
+                                f"🔄 触发规则层第 {guardrail_retry_counts[reviewed_stage]} 次重试...\n"
+                            ),
+                        )
+
+                        retry_prompt = _inject_retry_context(
+                            user_input,
+                            context_data,
+                            guardrail_result.message,
+                            guardrail_retry_counts[reviewed_stage],
+                            source="OutputGuardrail 规则校验",
+                        )
+
+                        retry_output = _run_single_agent(
+                            reviewed_agent,
+                            retry_prompt,
+                            config,
+                            max_tool_calls,
+                            on_tool_start,
+                            on_tool_end,
+                        )
+
+                        yield StreamEvent(type="text", content=retry_output)
+
+                    context_data[reviewed_stage] = retry_output
+
                     continue
                 else:
                     yield StreamEvent(
@@ -506,6 +820,9 @@ def stream_multi_agent_events(
                         content=f"\n⚠️ Critic 审查未通过，且达到最大重试次数 ({max_retries})，流水线停止。\n",
                     )
                     return
+
+            else:
+                context_data.pop(f"{agent_name}_feedback", None)
 
             context_data[agent_name] = agent_output
         else:
@@ -520,9 +837,9 @@ def stream_multi_agent_events(
                 if gr_retries >= MAX_GUARDRAIL_RETRIES:
                     yield StreamEvent(
                         type="text",
-                        content=f"\n⚠️ OutputGuardrail 达到最大重试次数，继续\n",
+                        content=f"\n⚠️ OutputGuardrail 达到最大重试次数，流水线停止\n",
                     )
-                    break
+                    return
 
                 guardrail_retry_counts[agent_name] = gr_retries + 1
 
