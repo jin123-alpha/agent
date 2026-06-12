@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 """
-CriticAgent —— 阶段性质量审查专家。
+CriticAgent —— 阶段性质量审查专家（语义层）。
 
-根据不同阶段传入不同检查清单，执行：
-1. 规则校验（结构、字段完整性）
-2. 证据检查（数据是否有来源支撑）
-3. LLM Critic（语义层面质量评估）
-4. 必要时触发重试
+纯规则校验（JSON 格式、字段完整性、范围检查）已下沉到 OutputGuardrail，
+CriticAgent 只负责需要 LLM 语义理解的深层审查：
+- 证据充分性检查
+- 事实幻觉检测
+- 数据来源可信度
+- 跨 Agent 一致性
+- 主观判断合理性
 """
 
 from dataclasses import dataclass, field
@@ -22,7 +24,7 @@ AGENT_NAME = "CriticAgent"
 
 
 # ---------------------------------------------------------------------------
-# 各阶段检查清单
+# Critic 检查项（仅 LLM 语义层，规则层已在 OutputGuardrail）
 # ---------------------------------------------------------------------------
 
 
@@ -32,51 +34,29 @@ class ChecklistItem:
 
     name: str
     description: str
-    required: bool = True  # 是否为必须通过项
+    required: bool = True
 
 
 @dataclass
 class StageChecklist:
-    """某个阶段的检查清单。"""
+    """某个阶段的语义审查清单。"""
 
-    stage: str  # 被审查的 Agent 名
+    stage: str
     items: list[ChecklistItem] = field(default_factory=list)
-    max_retries: int = 2  # 最大重试次数
+    max_retries: int = 2
 
 
-# --- 预定义检查清单 ---
+# --- 预定义检查清单（仅保留需要 LLM 判断的项） ---
 
 SEARCH_CHECKLIST = StageChecklist(
     stage="GitHubSearchAgent",
     max_retries=2,
     items=[
         ChecklistItem(
-            name="非空结果",
-            description="搜索结果不能为空，至少返回 1 个仓库",
-        ),
-        ChecklistItem(
-            name="JSON 格式",
-            description="输出必须是合法的 JSON 数组",
-        ),
-        ChecklistItem(
-            name="必要字段",
-            description=(
-                "每个仓库必须包含 full_name, html_url, description, stars, "
-                "language, updated_at, source 字段。推荐包含 forks, license, pushed_at, topics。"
-            ),
-        ),
-        ChecklistItem(
             name="真实来源",
             description=(
                 "每个仓库的 stars, language, updated_at 等事实字段必须来自真实工具或 GitHub API。"
                 "如果缺少 source/api_url/retrieved_at 等来源字段，必须标记为证据不足。"
-            ),
-        ),
-        ChecklistItem(
-            name="硬约束满足",
-            description=(
-                "每个仓库必须满足用户硬约束：stars > 1000，language 为 Python，"
-                "updated_at 或 pushed_at 在最近一年内。任何不满足硬约束的仓库必须标记为 failed。"
             ),
         ),
         ChecklistItem(
@@ -88,9 +68,16 @@ SEARCH_CHECKLIST = StageChecklist(
             ),
         ),
         ChecklistItem(
+            name="硬约束满足",
+            description=(
+                "每个仓库必须满足用户硬约束（如 stars、language、更新时间等）。"
+                "任何不满足硬约束的仓库必须标记为 failed。"
+            ),
+        ),
+        ChecklistItem(
             name="主题相关性",
             description=(
-                "仓库必须确实是 AI Agent / LLM Agent 构建框架或工具。"
+                "仓库必须确实与用户需求相关。"
                 "教程类仓库、资料合集、技能集合不能和框架类项目同等对待，应标记为相关性风险。"
             ),
             required=False,
@@ -102,21 +89,6 @@ ANALYSIS_CHECKLIST = StageChecklist(
     stage="RepoAnalysisAgent",
     max_retries=2,
     items=[
-        ChecklistItem(
-            name="覆盖所有仓库",
-            description="分析结果数量应与搜索结果中的仓库数量一致",
-        ),
-        ChecklistItem(
-            name="JSON 格式",
-            description="输出必须是合法的 JSON 数组",
-        ),
-        ChecklistItem(
-            name="必要字段",
-            description=(
-                "每个分析必须包含 full_name, readme_summary, features, "
-                "has_tests, has_docs, has_ci, has_docker, license, dependency_files 字段。"
-            ),
-        ),
         ChecklistItem(
             name="证据字段",
             description=(
@@ -138,8 +110,7 @@ ANALYSIS_CHECKLIST = StageChecklist(
             name="特征具体性",
             description=(
                 "features 不能只写 Lightweight architecture、Production ready 这类泛化描述，"
-                "应尽量提取 supports_tools、supports_multi_agent、supports_memory、supports_tracing、"
-                "supports_deployment 等可比较特征。"
+                "应尽量提取 supports_tools、supports_multi_agent、supports_memory 等可比较特征。"
             ),
             required=False,
         ),
@@ -158,30 +129,6 @@ SCORING_CHECKLIST = StageChecklist(
     stage="ScoringAgent",
     max_retries=1,
     items=[
-        ChecklistItem(
-            name="JSON 格式",
-            description="输出必须是合法 JSON 数组",
-        ),
-        ChecklistItem(
-            name="覆盖所有仓库",
-            description="评分结果数量应与仓库分析结果数量一致",
-        ),
-        ChecklistItem(
-            name="分数字段完整",
-            description=(
-                "每个项目必须包含 full_name, scores, weighted_total, rank。"
-                "scores 中必须包含 requirement_match, community_activity, "
-                "doc_quality, engineering, deployment。"
-            ),
-        ),
-        ChecklistItem(
-            name="分数范围",
-            description="所有维度分数必须在 0 到 10 之间",
-        ),
-        ChecklistItem(
-            name="排序正确",
-            description="rank 必须按照 weighted_total 从高到低排列",
-        ),
         ChecklistItem(
             name="权重可复核",
             description=(
@@ -211,30 +158,9 @@ REPORT_CHECKLIST = StageChecklist(
     max_retries=1,
     items=[
         ChecklistItem(
-            name="报告非空",
-            description="报告内容不能为空",
-        ),
-        ChecklistItem(
-            name="包含需求概述",
-            description="报告必须包含 '需求概述' 或类似标题，并准确复述用户硬约束",
-        ),
-        ChecklistItem(
-            name="包含候选项目表格",
-            description="报告必须包含项目对比表格（含排名、Stars、总分）",
-        ),
-        ChecklistItem(
-            name="包含详细分析",
-            description="报告必须包含每个项目的详细分析段落",
-        ),
-        ChecklistItem(
-            name="包含推荐结论",
-            description="报告必须包含明确的推荐结论，且推荐顺序必须与 ScoringAgent 排名一致",
-        ),
-        ChecklistItem(
             name="事实不新增",
             description=(
-                "报告中的事实必须来自 RequirementAgent、GitHubSearchAgent、"
-                "RepoAnalysisAgent 或 ScoringAgent 的上游数据。"
+                "报告中的事实必须来自上游 Agent 数据。"
                 "不得新增上游未提供的事实，例如官方维护、生产可用、更新频率最高等。"
             ),
         ),
@@ -243,6 +169,13 @@ REPORT_CHECKLIST = StageChecklist(
             description=(
                 "推荐结论中应引用具体评分数据和证据来源。"
                 "如果没有 README、GitHub metadata 或文件结构证据，应明确写为未确认。"
+            ),
+        ),
+        ChecklistItem(
+            name="推荐与排名一致",
+            description=(
+                "推荐结论中的排序必须与 ScoringAgent 的 rank 一致，"
+                "不能擅自调整排名。"
             ),
         ),
         ChecklistItem(
@@ -264,6 +197,7 @@ STAGE_CHECKLISTS: dict[str, StageChecklist] = {
     "ReportAgent": REPORT_CHECKLIST,
 }
 
+
 # ---------------------------------------------------------------------------
 # Critic 指令模板
 # ---------------------------------------------------------------------------
@@ -277,26 +211,25 @@ def build_critic_instructions(checklist: StageChecklist) -> str:
         items_text += f"{i}. {required_tag} {item.name}：{item.description}\n"
 
     return f"""\
-你是 CriticAgent —— 质量审查专家，当前审查阶段：{checklist.stage}。
+你是 CriticAgent —— 语义质量审查专家，当前审查阶段：{checklist.stage}。
+
+## 前置说明
+输出的格式校验（JSON 合法性、字段完整性、数值范围）已由 OutputGuardrail 完成。
+你无需重复检查格式问题，专注于以下语义层审查。
 
 ## 核心原则
 你的目标不是表扬上游 Agent，而是尽可能发现：
-- 事实错误
-- 证据不足
-- 字段缺失
+- 事实错误或幻觉内容
+- 证据不足（数据无来源支撑）
 - 逻辑跳跃
-- 幻觉内容
 - 过度确定的表述
 - 不满足用户硬约束的结果
+- 跨 Agent 数据不一致
 
 ## 审查要求
-1. 只有字段完整不代表结果正确。
-2. 没有来源支撑的事实字段必须写入 evidence_issues。
-3. 如果 stars、updated_at、license、language 等字段没有 source，必须标记为证据不足。
-4. 如果 has_tests、has_docs、has_ci、has_docker 等判断没有文件证据，必须标记为证据不足。
-5. 如果报告中出现上游数据没有提供的新事实，必须标记为潜在幻觉。
-6. 如果无法确认事实，不要默认通过，应标记 warning 或 failed。
-7. 对于【必须】项，只要存在严重证据不足，也应视为未通过。
+1. 没有来源支撑的事实字段必须写入 evidence_issues。
+2. 如果无法确认事实，不要默认通过，应标记 warning 或 failed。
+3. 对于【必须】项，只要存在严重证据不足，也应视为未通过。
 
 ## 检查清单
 {items_text}
@@ -311,12 +244,12 @@ def build_critic_instructions(checklist: StageChecklist) -> str:
       "passed": true/false,
       "required": true/false,
       "detail": "具体说明",
-      "serverity": "严重程度"
+      "severity": "high/medium/low"
     }}
   ],
   "evidence_issues": ["证据问题1", "证据问题2"],
   "overall_comment": "总体评价",
-  "retry_suggestion": "如果 passed=false，给出具体的修改建议供重试使用；如果 passed=true，设为 null"
+  "retry_suggestion": "如果 passed=false，给出具体修改建议；如果 passed=true，设为 null"
 }}
 
 ## 规则
@@ -354,7 +287,7 @@ def create_critic_agent(
         name=f"{AGENT_NAME}_{stage}",
         instructions=build_critic_instructions(checklist),
         tools=ToolRegistry(tools=[web_search]),
-        handoffs=[],  # Critic 不直接 handoff，由 runner 控制重试逻辑
+        handoffs=[],
         session=session or Session(),
         metadata={"critic_stage": stage, "max_retries": checklist.max_retries},
     )

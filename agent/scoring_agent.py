@@ -54,6 +54,7 @@ def create_scoring_agent(
     next_agent: str = "ReportAgent",
 ) -> Agent:
     """创建评分 Agent。"""
+    from guardrail.output_guardrails import STAGE_OUTPUT_GUARDRAILS
     from .agents import _make_handoff
 
     return Agent(
@@ -61,5 +62,7 @@ def create_scoring_agent(
         instructions=INSTRUCTIONS,
         tools=ToolRegistry(tools=[]),
         handoffs=[_make_handoff(AGENT_NAME, next_agent)],
+        output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),
     )
+

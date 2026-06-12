@@ -1,7 +1,6 @@
 {
-
   "stream": true,
   "base_url": "https://api.deepseek.com",
-  "api_key": "……",
+  "api_key": "<api_key>",
   "model": "deepseek-v4-flash"
 }
