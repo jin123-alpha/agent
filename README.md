@@ -1,6 +1,6 @@
 # Github search-report Agent
 
-这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。项目按 Agent、Runner、Tools、Handoff、Guardrail、Session、Tracing、Result 分层；每个具体 Agent 文件负责定义自己的 `StateGraph` 流程，`runner/` 负责调用对应 graph 并管理执行循环，`run.py` 只负责终端入口调度，终端打印放在 `result/`。`tools/` 目录负责放置具体工具函数和工具注册适配。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。
+这是一个基于 LangGraph + LangChain 的最小可扩展 Agent 项目。项目按 Agent、Runner、Tools、Handoff、Guardrail、Session、Tracing、Result 分层；每个具体 Agent 文件负责定义自己的 `StateGraph` 流程，`runner/` 负责调用对应 graph 并管理执行循环，`run.py` 只负责终端入口调度，终端打印放在 `result/`。`tools/` 目录负责放置具体工具函数和工具注册适配。新增工具时，只需要定义函数、写好 docstring，然后加入 `tools/__init__.py` 的 `TOOLS` 数组。当前 C 模块已经补齐 README 获取、特性提取和缓存能力，并注册到了对应的 `RepoAnalysisAgent`。
 
 ## 文件结构
 
@@ -21,6 +21,8 @@ agent/
 |   |-- __init__.py         # 具体工具注册表：TOOLS 和 TOOL_MAP
 |   |-- code_tools.py       # 文件结构、读文件、创建文件、编辑文件、编译检查
 |   |-- github_search_*.py  # GitHubSearchAgent DAG 节点（查询/摄入/检索/精排/过滤）
+|   |-- readme_tools.py     # README 拉取与截断
+|   |-- feature_tools.py    # README 特性提取与证据抽取
 |   |-- math_tools.py       # 数学工具
 |   |-- memory_tools.py     # 长期记忆工具
 |   |-- registry.py         # 工具注册表对象和 LangChain 适配
@@ -136,6 +138,53 @@ def _create_dag_graph(**kwargs):
 > **注意：** GitHubSearchAgent 使用 DAG 内部自审，不走外部 CriticAgent 审查流水线。其他 Agent 仍使用默认 ReAct agent-loop 模式（agent ↔ tools 循环）。
 
 `graph_factory` 接收 `config`、`max_tool_calls`、`agent`、`on_tool_start`、`on_tool_end` 参数，并返回 `(graph, HumanMessage)`。
+
+## C：README / 特性提取实现
+
+C 模块负责把仓库内容从“只知道它存在”推进到“能够结构化描述它能做什么”。目标是先稳定拿到 README，再从 README 中提取功能特性、部署能力和证据片段，供后续评分和报告使用。
+
+### 已实现工具
+
+- `fetch_readme(repo_full_name, max_chars=15000)`：通过 GitHub REST API 获取 README，并对超长内容做截断，避免上下文爆炸。
+- `extract_features_from_readme(readme_content)`：从 README 中抽取项目目的、主要特性、部署能力和证据片段，输出统一 JSON。
+
+### 特性输出格式
+
+```json
+{
+  "purpose": "",
+  "main_features": [],
+  "supports_web_ui": true,
+  "supports_local_deploy": true,
+  "supports_docker": true,
+  "supports_local_model": true,
+  "supports_openai_compatible_api": true,
+  "supports_ollama": true,
+  "supports_rag": true,
+  "supports_multi_user": false,
+  "developer_friendly": true,
+  "evidence": [
+    {
+      "source": "README.md",
+      "quote": "...Docker Compose...",
+      "feature": "supports_docker"
+    }
+  ]
+}
+```
+
+### 缓存策略
+
+`session/Session` 增加了仓库级缓存，用来避免重复拉取同一个仓库的 README 或重复分析同一份内容：
+
+- `_readme_cache`：缓存仓库的 README 原文或截断结果。
+- `_repo_analysis_cache`：缓存仓库的结构和特性分析结果。
+- `get_cached_readme()` / `set_cached_readme()`：读取和写入 README 缓存。
+- `get_repo_analysis()` / `set_repo_analysis()`：读取和写入仓库分析缓存。
+
+### 在 Agent 中的注册方式
+
+`RepoAnalysisAgent` 已注册 `fetch_readme`、`extract_features_from_readme` 和 `web_search`。实际运行时会优先读取 README，再从 README 中提取特征；当 README 不足以支撑判断时，再用 `web_search` 补充官方文档或其他公开来源。
 
 ## 单 Agent 调试
 

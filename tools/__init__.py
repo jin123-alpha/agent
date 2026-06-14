@@ -1,6 +1,8 @@
 from .code_tools import compile_python_files, create_file, edit_code_file, list_workspace_files, read_code_file
+from .feature_tools import extract_features_from_readme
 from .math_tools import add
 from .memory_tools import forget_memory, recall_memory, remember
+from .readme_tools import fetch_readme
 from .registry import ToolRegistry, create_default_tool_registry
 from .scoring_tools import score_projects, validate_project_result, validate_report
 from .security_tools import generate_runtime_secret
@@ -22,6 +24,8 @@ TOOLS = [
     score_projects,
     validate_project_result,
     validate_report,
+    fetch_readme,
+    extract_features_from_readme,
 ]
 
 TOOL_MAP = {tool.__name__: tool for tool in TOOLS}
@@ -34,4 +38,6 @@ __all__ = [
     "score_projects",
     "validate_project_result",
     "validate_report",
+    "fetch_readme",
+    "extract_features_from_readme",
 ]
