@@ -1,3 +1,4 @@
+import sys
 from typing import Callable
 
 from agent import Agent, create_agent_state_schema, create_default_agent
@@ -201,7 +202,6 @@ def check_guardrails(agent: Agent, user_input: str) -> str | None:
         result = guardrail.run(user_input)
         if not result.ok:
             return result.message or f"Guardrail blocked input: {guardrail.name}"
-
     return None
 
 

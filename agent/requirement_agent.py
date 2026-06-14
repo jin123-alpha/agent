@@ -1,5 +1,7 @@
 """RequirementAgent —— 需求解析专家。"""
 
+import sys
+
 from handoff import Handoff
 from session import Session
 from tools import ToolRegistry
@@ -69,7 +71,6 @@ def create_requirement_graph(**kwargs):
 
     model = build_chat_model(ChatOpenAI, config)
     tracer = agent.tracer or Tracer()
-
     def call_model(state):
         tracer.record("requirement_model_start", llm_calls=state.get("llm_calls", 0))
         messages = [

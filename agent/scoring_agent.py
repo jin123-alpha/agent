@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-
+from typing import Annotated
 from session import Session
 from tools import ToolRegistry, score_projects, validate_project_result
 

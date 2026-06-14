@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+import sys
+from typing import Any, Callable, final
 
 from agent import Agent
 from agent.agents import AGENT_CRITIC, AGENT_PIPELINE, create_all_agents
@@ -237,6 +238,7 @@ def _run_single_agent(
         on_tool_start=on_tool_start,
         on_tool_end=on_tool_end,
     )
+
     initial_state = build_initial_state(HumanMessage, prompt)
     final_state = graph.invoke(initial_state)
     return _extract_output(final_state["messages"])
@@ -417,7 +419,6 @@ def run_multi_agent_pipeline(
     while i < len(AGENT_PIPELINE):
         agent_name = AGENT_PIPELINE[i]
         agent = agents[agent_name]
-
         # --- 输入 Guardrail ---
         blocked = check_guardrails(agent, user_input)
         if blocked:
@@ -441,11 +442,19 @@ def run_multi_agent_pipeline(
             on_agent_start(agent_name)
 
         tracer.record("pipeline_agent_start", agent_name=agent_name)
+  
+        # if agent_name == AGENT_PIPELINE[3]:
+        #     print(prompt)
+        #     sys.exit(0)
 
         # --- 执行 Agent ---
         agent_output = _run_single_agent(
             agent, prompt, config, max_tool_calls, on_tool_start, on_tool_end
         )
+
+        if agent_name == AGENT_PIPELINE[2]:
+            print(agent_output)
+            sys.exit(0)
 
         tracer.record("pipeline_agent_end", agent_name=agent_name)
 
