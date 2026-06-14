@@ -499,7 +499,7 @@ def run_multi_agent_pipeline(
     while i < len(AGENT_PIPELINE):
         agent_name = AGENT_PIPELINE[i]
         agent = agents[agent_name]
-        tracer.record("agent_start", agent_name=agent_name)
+
         # --- 输入 Guardrail ---
         blocked = check_guardrails(agent, user_input)
         if blocked:
@@ -539,6 +539,10 @@ def run_multi_agent_pipeline(
         )
 
 
+
+        if agent_name == AGENT_PIPELINE[2]:
+            print(agent_output)
+            sys.exit(0)
 
         tracer.record("pipeline_agent_end", agent_name=agent_name)
         tracer.record("agent_end", agent_name=agent_name, output_length=len(agent_output))
