@@ -39,7 +39,7 @@ def pipeline(user_input: str) -> None:
     config = load_config()
     max_tool_calls = 10
 
-    print(f"\n📋 用户需求: {user_input}\n")
+    print(f"\n用户需求：{user_input}\n")
     with tool_progress_callbacks() as callbacks:
         if config.get("stream", False):
             events = stream_multi_agent_events(
