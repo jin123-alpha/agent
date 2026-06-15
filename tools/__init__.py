@@ -3,6 +3,7 @@ from .feature_tools import extract_features_from_readme
 from .math_tools import add
 from .memory_tools import forget_memory, recall_memory, remember
 from .readme_tools import fetch_readme
+from .report_tools import generate_report
 from .registry import ToolRegistry, create_default_tool_registry
 from .scoring_tools import score_projects, validate_project_result, validate_report
 from .security_tools import generate_runtime_secret
@@ -24,6 +25,7 @@ TOOLS = [
     score_projects,
     validate_project_result,
     validate_report,
+    generate_report,
     fetch_readme,
     extract_features_from_readme,
 ]
@@ -38,6 +40,7 @@ __all__ = [
     "score_projects",
     "validate_project_result",
     "validate_report",
+    "generate_report",
     "fetch_readme",
     "extract_features_from_readme",
 ]

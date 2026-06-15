@@ -33,7 +33,9 @@ def _decode_json(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     text = value.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    fenced = re.match(r"^```json\s*(.*?)\s*```\s*$", text, re.DOTALL)
+    if not fenced:
+        fenced = re.match(r"^```\s*(.*?)\s*```\s*$", text, re.DOTALL)
     if fenced:
         text = fenced.group(1).strip()
     try:
@@ -42,12 +44,41 @@ def _decode_json(value: Any) -> Any:
         return value
 
 
+def _decode_agent_output(value: Any) -> Any:
+    decoded = _decode_json(value)
+    if decoded is not value:
+        return decoded
+    if not isinstance(value, str):
+        return value
+
+    candidates = [value]
+    normalised = value.replace("\\n", "\n")
+    if normalised != value:
+        candidates.append(normalised)
+
+    for candidate in candidates:
+        fenced = re.search(r"```json\s*(.*?)\s*```", candidate, re.DOTALL)
+        if not fenced:
+            fenced = re.search(r"```\s*(.*?)\s*```", candidate, re.DOTALL)
+        if fenced:
+            try:
+                return json.loads(fenced.group(1).strip())
+            except json.JSONDecodeError:
+                continue
+    return value
+
+
 def _extract_context(prompt: str) -> dict[str, Any]:
-    match = re.search(r"```json\s*(.*?)\s*```", prompt, re.DOTALL)
-    if match:
-        parsed = _decode_json(match.group(1))
-        if isinstance(parsed, dict):
-            return parsed
+    fence_start = prompt.find("```json")
+    if fence_start >= 0:
+        content_start = prompt.find("\n", fence_start)
+        if content_start >= 0:
+            content_start += 1
+            content_end = prompt.find("\n```", content_start)
+            if content_end >= 0:
+                parsed = _decode_json(prompt[content_start:content_end])
+                if isinstance(parsed, dict):
+                    return parsed
 
     parsed = _decode_json(prompt)
     return parsed if isinstance(parsed, dict) else {}
@@ -74,30 +105,35 @@ def create_scoring_graph(**kwargs):
     add_messages = deps["add_messages"]
     tracer = agent.tracer or Tracer()
 
-    class ScoringState(TypedDict, total=False):
-        messages: Annotated[list, add_messages]
-        llm_calls: int
-        requirements: dict[str, Any]
-        projects: list[dict[str, Any]]
-        metadata_projects: list[dict[str, Any]]
-        scores_json: str
-        validation: dict[str, Any]
+    ScoringState = TypedDict(
+        "ScoringState",
+        {
+            "messages": Annotated[list, add_messages],
+            "llm_calls": int,
+            "requirements": dict[str, Any],
+            "projects": list[dict[str, Any]],
+            "metadata_projects": list[dict[str, Any]],
+            "scores_json": str,
+            "validation": dict[str, Any],
+        },
+        total=False,
+    )
 
-    def parse_input(state: ScoringState):
+    def parse_input(state: dict[str, Any]):
         prompt = str(state["messages"][-1].content)
         context = _extract_context(prompt)
-        requirements = _decode_json(context.get("RequirementAgent", {}))
-        projects = _decode_json(context.get("RepoAnalysisAgent", []))
-        metadata_projects = _decode_json(context.get("GitHubSearchAgent", []))
+        requirements = _decode_agent_output(context.get("RequirementAgent", {}))
+        projects = _decode_agent_output(context.get("RepoAnalysisAgent", []))
+        metadata_projects = _decode_agent_output(context.get("GitHubSearchAgent", []))
 
         if not context:
             direct = _decode_json(prompt)
             if isinstance(direct, dict):
-                requirements = _decode_json(direct.get("RequirementAgent", {}))
-                projects = _decode_json(
+                requirements = _decode_agent_output(direct.get("RequirementAgent", {}))
+                projects = _decode_agent_output(
                     direct.get("RepoAnalysisAgent", direct.get("projects", []))
                 )
-                metadata_projects = _decode_json(
+                metadata_projects = _decode_agent_output(
                     direct.get("GitHubSearchAgent", direct.get("project_metadata", []))
                 )
 
@@ -113,7 +149,7 @@ def create_scoring_graph(**kwargs):
             ),
         }
 
-    def calculate_scores(state: ScoringState):
+    def calculate_scores(state: dict[str, Any]):
         tracer.record("scoring_rules_start")
         scores_json = score_projects(
             state.get("projects", []),
@@ -123,7 +159,7 @@ def create_scoring_graph(**kwargs):
         tracer.record("scoring_rules_end")
         return {"scores_json": scores_json}
 
-    def validate_scores(state: ScoringState):
+    def validate_scores(state: dict[str, Any]):
         validation = json.loads(
             validate_project_result(
                 state.get("scores_json", "[]"),
@@ -138,7 +174,7 @@ def create_scoring_graph(**kwargs):
         )
         return {"validation": validation}
 
-    def finalize(state: ScoringState):
+    def finalize(state: dict[str, Any]):
         validation = state.get("validation", {})
         if not validation.get("ok", False):
             payload = {
