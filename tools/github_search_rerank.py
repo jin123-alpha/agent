@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """llm_reranking 节点：用 DeepSeek 单次调用对 top-N 候选仓库精排打分。"""
 
 import json

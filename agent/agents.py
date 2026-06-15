@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Agent 流水线编排模块。
 

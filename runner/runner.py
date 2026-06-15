@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Callable
 
 from agent import Agent, create_agent_state_schema, create_default_agent

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """self_review 节点：DAG 内部逐条审核候选仓库相关性，利用已有精排结果按序检查。"""
 
 import json

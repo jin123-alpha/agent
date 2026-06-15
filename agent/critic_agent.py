@@ -55,18 +55,34 @@ ANALYSIS_CHECKLIST = StageChecklist(
         ChecklistItem(
             name="证据字段",
             description=(
-                "每个关键判断必须提供 evidence。包括 has_tests, has_docs, has_ci, "
-                "has_docker, license, dependency_files, features。"
-                "例如 has_docker=true 必须有 Dockerfile 或 docker-compose.yml 证据。"
+                "每个关键判断必须提供 evidence，且 evidence 要能对应到具体文件、README 片段或仓库元数据。"
+                "包括 has_tests, has_docs, has_ci, has_docker, license, dependency_files, features。"
+                "例如 has_docker=true 必须有 Dockerfile 或 docker-compose.yml 证据，"
+                "license 不能只写猜测值。"
             ),
         ),
         ChecklistItem(
-            name="工程判断证据",
+            name="结果覆盖与唯一性",
+            description=(
+                "分析结果应与 GitHubSearchAgent 输入仓库一一对应，不能漏项、重复或改写 full_name。"
+                "如果某个仓库证据不足，应该在对应条目中保留不确定性，而不是跳过该仓库。"
+            ),
+        ),
+        ChecklistItem(
+            name="字段一致性",
             description=(
                 "has_tests 必须来自 tests/、test/ 或 CI 配置；"
                 "has_docs 必须来自 docs/、README 链接或文档目录；"
                 "has_ci 必须来自 .github/workflows、.gitlab-ci.yml 等；"
-                "has_docker 必须来自 Dockerfile 或 docker-compose.yml。"
+                "has_docker 必须来自 Dockerfile 或 docker-compose.yml；"
+                "dependency_files 只应列出确实存在的文件。"
+            ),
+        ),
+        ChecklistItem(
+            name="结论与证据闭环",
+            description=(
+                "readme_summary、features 和 project_structure_quality 必须能从 README、仓库文件或显式证据中推出。"
+                "如果只是推测、营销性描述或泛化判断，应标记为不可靠。"
             ),
         ),
         ChecklistItem(
@@ -180,6 +196,16 @@ def build_critic_instructions(checklist: StageChecklist) -> str:
         required_tag = "【必须】" if item.required else "【建议】"
         items_text += f"{i}. {required_tag} {item.name}：{item.description}\n"
 
+    stage_specific_guidance = ""
+    if checklist.stage == "RepoAnalysisAgent":
+        stage_specific_guidance = """
+
+## RepoAnalysisAgent 专属审查重点
+- 检查每个仓库是否都有对应条目，full_name 是否保持一致。
+- 检查 has_tests / has_docs / has_ci / has_docker 是否能被 evidence 直接支撑。
+- 检查 dependency_files、readme_summary、features 和 project_structure_quality 是否与仓库文件或 README 相符。
+- 对于证据不足的条目，不要用确定性语气补全缺失信息。"""
+
     return f"""\
 你是 CriticAgent —— 语义质量审查专家，当前审查阶段：{checklist.stage}。
 
@@ -195,6 +221,7 @@ def build_critic_instructions(checklist: StageChecklist) -> str:
 - 过度确定的表述
 - 不满足用户硬约束的结果
 - 跨 Agent 数据不一致
+{stage_specific_guidance}
 
 ## 审查要求
 1. 没有来源支撑的事实字段必须写入 evidence_issues。

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """RequirementAgent —— 需求解析专家。"""
 
 from handoff import Handoff
