@@ -1,5 +1,3 @@
-import sys
-
 from result import print_run_result, print_stream_events, tool_progress_callbacks
 from runner import (
     load_config,
@@ -10,10 +8,9 @@ from runner import (
 )
 
 
-def main(user_input :str) -> None:
-    """默认单 Agent 模式。"""
+def main(user_input: str) -> None:
+    """Run the default single-agent mode."""
     config = load_config()
-
     max_tool_calls = 10
 
     with tool_progress_callbacks() as callbacks:
@@ -37,13 +34,12 @@ def main(user_input :str) -> None:
             print_run_result(result)
 
 
-def pipeline(user_input:str) -> None:
-    """多 Agent 流水线模式 —— GitHub 开源技术选型。"""
+def pipeline(user_input: str) -> None:
+    """Run the multi-agent GitHub technology selection pipeline."""
     config = load_config()
     max_tool_calls = 10
 
-    print(f"\n📋 用户需求: {user_input}\n")
-
+    print(f"\n用户需求：{user_input}\n")
     with tool_progress_callbacks() as callbacks:
         if config.get("stream", False):
             events = stream_multi_agent_events(
@@ -61,15 +57,17 @@ def pipeline(user_input:str) -> None:
                 config=config,
                 on_tool_start=callbacks["on_tool_start"],
                 on_tool_end=callbacks["on_tool_end"],
-                on_agent_start=lambda name: print(f"\n🤖 [{name}] 开始执行..."),
-                on_agent_end=lambda name, _: print(f"✅ [{name}] 完成"),
+                on_agent_start=lambda name: print(f"\n当前 Agent：{name}"),
+                on_agent_end=lambda name, _: print(f"Agent 完成：{name}"),
             )
             print_run_result(result)
 
 
 if __name__ == "__main__":
-    user_input = "帮我找一个agent构建相关的仓库，要求是Python写的，star数超过1000，最近一年有更新的。"
-    pipeline(user_input)
-    
-    #main(user_input)
+    demo_input = (
+        "我想做一个本地部署的 RAG 知识库系统，要求支持 PDF 上传、"
+        "向量检索、Ollama、本地模型、Web UI，并且方便二次开发。"
+    )
+    pipeline(demo_input)
 
+    # main(demo_input)

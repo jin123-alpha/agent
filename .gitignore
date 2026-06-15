@@ -4,3 +4,6 @@ data/memory.json
 config.json
 handoff*
 all-mpnet-base-v2
+AGENTS.md
+.vscode/
+*.json

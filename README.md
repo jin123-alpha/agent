@@ -420,3 +420,115 @@ python -B -m unittest discover -s tests -v
 ```
 
 完整检查结果见 [QUALITY_REPORT.md](QUALITY_REPORT.md)。
+
+## E：Tracing、报告与端到端集成
+
+多 Agent 流水线会在最终阶段生成 Markdown 技术选型报告，并为每次阻塞式运行保存 trace 文件，方便回看 Agent、工具和 Guardrail 的执行过程。
+
+### Markdown 报告生成
+
+报告生成工具位于 `tools/report_tools.py`：
+
+```python
+generate_report(requirements, projects, analysed_projects, scores, guardrail_warnings)
+```
+
+报告固定输出以下结构：
+
+```markdown
+# 技术选型报告
+
+## 1. 用户需求分析
+## 2. 候选项目概览
+## 3. GitHub 基础信息对比
+## 4. 功能特性对比
+## 5. 项目评分矩阵
+## 6. 推荐方案
+## 7. 风险分析
+## 8. 后续开发路线建议
+## 9. 参考来源
+```
+
+成功执行 `run_multi_agent_pipeline` 后，报告会保存到：
+
+```text
+data/reports/{run_id}.md
+```
+
+终端也会打印报告路径和 Markdown 内容。
+
+### Trace 落盘
+
+`tracing.Tracer` 会为每次运行生成 `run_id`，并保存 trace：
+
+```text
+data/traces/{run_id}.json
+```
+
+Trace 文件结构：
+
+```json
+{
+  "run_id": "",
+  "events": [
+    {"name": "agent_start", "data": {}},
+    {"name": "tool_start", "data": {}},
+    {"name": "tool_end", "data": {}},
+    {"name": "guardrail_warning", "data": {}}
+  ]
+}
+```
+
+当前记录的事件包括 Agent 开始/结束、工具开始/结束、模型节点事件和 Guardrail warning。
+
+### AgentState 快照
+
+阻塞式流水线还会保存每个 Agent 在每个 LangGraph 节点后的累计 `AgentState`：
+
+```text
+data/states/{run_id}.json
+```
+
+State 文件结构：
+
+```json
+{
+  "run_id": "",
+  "states": [
+    {
+      "agent": "RepoAnalysisAgent",
+      "step": "agent",
+      "timestamp": "",
+      "state": {
+        "messages": [],
+        "llm_calls": 1
+      }
+    }
+  ]
+}
+```
+
+其中 `messages` 会被转换为可读 JSON，保留消息类型、内容预览、工具调用和工具返回信息，避免直接写入不可序列化的 LangChain 对象。
+
+### 端到端 Demo
+
+运行：
+
+```bash
+python run.py
+```
+
+默认输入：
+
+```text
+我想做一个本地部署的 RAG 知识库系统，要求支持 PDF 上传、向量检索、Ollama、本地模型、Web UI，并且方便二次开发。
+```
+
+终端会显示：
+
+- 当前 Agent 名称
+- 工具调用进度
+- 最终报告路径
+- Trace 文件路径
+- AgentState 快照路径
+- 完整 Markdown 技术选型报告
