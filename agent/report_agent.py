@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """ReportAgent —— 技术选型报告生成专家。"""
 
 from session import Session

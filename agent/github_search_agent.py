@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """GitHubSearchAgent —— GitHub 仓库搜索专家。
 
 DAG 流水线:

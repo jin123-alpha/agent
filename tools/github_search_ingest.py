@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """ingest_github_repos 节点：调用 GitHub Search API 搜索仓库，并发抓取 README 和文档。"""
 
 import asyncio

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """RepoAnalysisAgent —— 仓库深度分析专家。"""
 
 from handoff import Handoff

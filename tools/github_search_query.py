@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """convert_query 节点：将 RequirementAgent 输出的结构化 JSON 转为 GitHub Search API 的 q 参数。"""
 
 import json

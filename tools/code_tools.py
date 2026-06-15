@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import py_compile
 import traceback
@@ -23,7 +25,7 @@ def resolve_project_path(path: str) -> Path:
     return target
 
 
-def read_code_file(path: str, start_line: int = 1, end_line: int | None = None) -> str:
+def read_code_file(path: str, start_line: int = 1, end_line: int = None) -> str:
     """
     read_code_file(path, start_line=1, end_line=None)：阅读项目内代码文件，返回带行号的指定行范围；一次最多返回 200 行。
     """

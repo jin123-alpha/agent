@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """threshold_filtering 节点：过滤低 star + 低精排分的仓库。"""
 
 import logging

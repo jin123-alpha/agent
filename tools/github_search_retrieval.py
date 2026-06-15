@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """dense_retrieval 节点：SentenceTransformer + BM25 混合语义检索。"""
 
 import logging
