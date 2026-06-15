@@ -24,6 +24,7 @@ from tracing import Tracer
 
 from .config import load_config
 from .runner import build_initial_state, check_guardrails, create_agent_graph
+from tools.report_tools import generate_report, save_markdown_report
 
 ToolCallback = Callable[[str], None]
 MAX_GUARDRAIL_RETRIES = 2
@@ -222,6 +223,32 @@ def _result_metadata(
     return metadata
 
 
+def _build_markdown_report(context_data: dict[str, Any], metadata: dict[str, Any]) -> str:
+    analysed_projects = _parse_json_output(
+        context_data.get("RepoAnalysisAgent", ""),
+        [],
+    )
+    return generate_report(
+        requirements=metadata.get("requirements", {}),
+        projects=metadata.get("projects", []),
+        analysed_projects=analysed_projects,
+        scores=metadata.get("scores", []),
+        guardrail_warnings=metadata.get("guardrail_warnings", []),
+    )
+
+
+def _finalize_result(result: RunResult, tracer: Tracer, save_report: bool = False) -> RunResult:
+    if save_report and result.final_output.strip():
+        result.metadata["report_path"] = save_markdown_report(
+            result.final_output,
+            tracer.run_id,
+        )
+    result.metadata["run_id"] = tracer.run_id
+    result.metadata["trace_path"] = tracer.save()
+    result.metadata["state_path"] = tracer.save_states()
+    return result
+
+
 def _run_single_agent(
     agent: Agent,
     prompt: str,
@@ -240,8 +267,34 @@ def _run_single_agent(
     )
 
     initial_state = build_initial_state(HumanMessage, prompt)
-    final_state = graph.invoke(initial_state)
+    tracer = agent.tracer
+    final_state = dict(initial_state)
+    if tracer is not None:
+        tracer.record_state(agent.name, "START", final_state)
+
+    for update in graph.stream(initial_state, stream_mode="updates"):
+        if not isinstance(update, dict):
+            continue
+        for step_name, step_update in update.items():
+            if not isinstance(step_update, dict):
+                continue
+            _merge_state_update(final_state, step_update)
+            if tracer is not None:
+                tracer.record_state(agent.name, step_name, final_state)
+
     return _extract_output(final_state["messages"])
+
+
+def _merge_state_update(state: dict[str, Any], update: dict[str, Any]) -> None:
+    for key, value in update.items():
+        if key == "messages":
+            existing = state.setdefault("messages", [])
+            if isinstance(value, list):
+                existing.extend(value)
+            else:
+                existing.append(value)
+        else:
+            state[key] = value
 
 
 def _run_output_guardrails(
@@ -308,6 +361,7 @@ def _validate_agent_output_with_guardrails(
     pipeline_trace: list[dict[str, Any]],
     retry_counts: dict[str, int],
     guardrail_retry_counts: dict[str, int],
+    tracer: Tracer | None = None,
 ) -> tuple[str, RunResult | None]:
     """Validate one agent output. Retry locally; block if rules still fail."""
     while True:
@@ -321,6 +375,13 @@ def _validate_agent_output_with_guardrails(
             return agent_output, None
 
         gr_retries = guardrail_retry_counts.get(agent_name, 0)
+        if tracer is not None:
+            tracer.record(
+                "guardrail_warning",
+                agent_name=agent_name,
+                failures=guardrail_result.failures,
+                retry_count=gr_retries,
+            )
 
         if gr_retries >= MAX_GUARDRAIL_RETRIES:
             if on_agent_end:
@@ -409,6 +470,18 @@ def run_multi_agent_pipeline(
     context_data: dict[str, Any] = {}
     pipeline_trace: list[dict[str, Any]] = []
     tracer = Tracer()
+    for agent in agents.values():
+        agent.tracer = tracer
+
+    def traced_tool_start(tool_name: str) -> None:
+        tracer.record("tool_start", tool_name=tool_name)
+        if on_tool_start:
+            on_tool_start(tool_name)
+
+    def traced_tool_end(tool_name: str) -> None:
+        tracer.record("tool_end", tool_name=tool_name)
+        if on_tool_end:
+            on_tool_end(tool_name)
 
     i = 0
     retry_counts: dict[str, int] = {}
@@ -419,13 +492,15 @@ def run_multi_agent_pipeline(
     while i < len(AGENT_PIPELINE):
         agent_name = AGENT_PIPELINE[i]
         agent = agents[agent_name]
+        tracer.record("agent_start", agent_name=agent_name)
         # --- 输入 Guardrail ---
         blocked = check_guardrails(agent, user_input)
         if blocked:
+            tracer.record("guardrail_warning", agent_name=agent_name, reason=blocked)
             pipeline_trace.append(
                 {"agent": agent_name, "status": "blocked", "reason": blocked}
             )
-            return RunResult(
+            return _finalize_result(RunResult(
                 final_output=blocked,
                 metadata=_result_metadata(
                     context_data,
@@ -433,7 +508,7 @@ def run_multi_agent_pipeline(
                     blocked_by_guardrail=True,
                     blocked_agent=agent_name,
                 ),
-            )
+            ), tracer)
 
         # --- 构造 prompt ---
         prompt = _inject_context(user_input, context_data)
@@ -449,14 +524,13 @@ def run_multi_agent_pipeline(
 
         # --- 执行 Agent ---
         agent_output = _run_single_agent(
-            agent, prompt, config, max_tool_calls, on_tool_start, on_tool_end
+            agent, prompt, config, max_tool_calls, traced_tool_start, traced_tool_end
         )
 
-        if agent_name == AGENT_PIPELINE[2]:
-            print(agent_output)
-            sys.exit(0)
+
 
         tracer.record("pipeline_agent_end", agent_name=agent_name)
+        tracer.record("agent_end", agent_name=agent_name, output_length=len(agent_output))
 
         if on_agent_end:
             on_agent_end(agent_name, agent_output)
@@ -485,7 +559,7 @@ def run_multi_agent_pipeline(
                     })
                     if on_agent_end:
                         on_agent_end(agent_name, f"⚠️ {message}")
-                    return RunResult(
+                    return _finalize_result(RunResult(
                         final_output=message,
                         metadata=_result_metadata(
                             context_data,
@@ -497,7 +571,7 @@ def run_multi_agent_pipeline(
                             guardrail_retry_counts=guardrail_retry_counts,
                             critic_format_retry_counts=critic_format_retry_counts,
                         ),
-                    )
+                    ), tracer)
 
                 critic_format_retry_counts[agent_name] = current_format_retries + 1
                 feedback = critic_result.get(
@@ -535,8 +609,8 @@ def run_multi_agent_pipeline(
                     retry_prompt,
                     config,
                     max_tool_calls,
-                    on_tool_start,
-                    on_tool_end,
+                    traced_tool_start,
+                    traced_tool_end,
                 )
 
                 if on_agent_end:
@@ -586,7 +660,7 @@ def run_multi_agent_pipeline(
                     reviewed_agent = agents[reviewed_stage]
                     retry_output = _run_single_agent(
                         reviewed_agent, retry_prompt, config,
-                        max_tool_calls, on_tool_start, on_tool_end,
+                        max_tool_calls, traced_tool_start, traced_tool_end,
                     )
 
                     if on_agent_end:
@@ -602,16 +676,17 @@ def run_multi_agent_pipeline(
                         context_data,
                         config,
                         max_tool_calls,
-                        on_tool_start,
-                        on_tool_end,
+                        traced_tool_start,
+                        traced_tool_end,
                         on_agent_start,
                         on_agent_end,
                         pipeline_trace,
                         retry_counts,
                         guardrail_retry_counts,
+                        tracer,
                     )
                     if blocked_result is not None:
-                        return blocked_result
+                        return _finalize_result(blocked_result, tracer)
 
                     context_data[reviewed_stage] = retry_output
 
@@ -636,7 +711,7 @@ def run_multi_agent_pipeline(
                             agent_name,
                             f"⚠️ {message}",
                         )
-                    return RunResult(
+                    return _finalize_result(RunResult(
                         final_output=message,
                         metadata=_result_metadata(
                             context_data,
@@ -648,7 +723,7 @@ def run_multi_agent_pipeline(
                             guardrail_retry_counts=guardrail_retry_counts,
                             critic_format_retry_counts=critic_format_retry_counts,
                         ),
-                    )
+                    ), tracer)
             else:
                 context_data.pop(f"{agent_name}_feedback", None)
                 pipeline_trace.append({
@@ -668,16 +743,17 @@ def run_multi_agent_pipeline(
                 context_data,
                 config,
                 max_tool_calls,
-                on_tool_start,
-                on_tool_end,
+                traced_tool_start,
+                traced_tool_end,
                 on_agent_start,
                 on_agent_end,
                 pipeline_trace,
                 retry_counts,
                 guardrail_retry_counts,
+                tracer,
             )
             if blocked_result is not None:
-                return blocked_result
+                return _finalize_result(blocked_result, tracer)
 
             context_data[agent_name] = agent_output
 
@@ -701,17 +777,21 @@ def run_multi_agent_pipeline(
     # --- 返回最终结果 ---
     from agent.agents import AGENT_REPORT
 
-    final_output = context_data.get(AGENT_REPORT, "")
+    metadata = _result_metadata(
+        context_data,
+        pipeline_trace,
+        retry_counts=retry_counts,
+        guardrail_retry_counts=guardrail_retry_counts,
+        critic_format_retry_counts=critic_format_retry_counts,
+    )
+    final_output = _build_markdown_report(context_data, metadata)
+    context_data[AGENT_REPORT] = final_output
+    metadata["agent_outputs"] = context_data
 
-    return RunResult(
-        final_output=final_output,
-        metadata=_result_metadata(
-            context_data,
-            pipeline_trace,
-            retry_counts=retry_counts,
-            guardrail_retry_counts=guardrail_retry_counts,
-            critic_format_retry_counts=critic_format_retry_counts,
-        ),
+    return _finalize_result(
+        RunResult(final_output=final_output, metadata=metadata),
+        tracer,
+        save_report=True,
     )
 
 

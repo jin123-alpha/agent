@@ -51,11 +51,11 @@ AGENT_PIPELINE = [
     AGENT_REQUIREMENT,
     AGENT_GITHUB_SEARCH,       # DAG 内部自审，无需外部 Critic
     AGENT_REPO_ANALYSIS,
-    AGENT_CRITIC_ANALYSIS,    # ← Critic 审查分析结果
+    # AGENT_CRITIC_ANALYSIS,    # ← Critic 审查分析结果
     AGENT_SCORING,
-    AGENT_CRITIC_SCORING,     # ← Critic 审查评分证据与语义一致性
+    # AGENT_CRITIC_SCORING,     # ← Critic 审查评分证据与语义一致性
     AGENT_REPORT,
-    AGENT_CRITIC_REPORT,      # ← Critic 审查报告
+    # AGENT_CRITIC_REPORT,      # ← Critic 审查报告
 ]
 
 # ---------------------------------------------------------------------------

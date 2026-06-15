@@ -23,6 +23,17 @@ def print_stream_events(events: Iterable[StreamEvent]) -> None:
 
 
 def print_run_result(result: RunResult) -> None:
+    report_path = result.metadata.get("report_path")
+    trace_path = result.metadata.get("trace_path")
+    state_path = result.metadata.get("state_path")
+    if report_path:
+        print(f"Report saved to: {report_path}")
+    if trace_path:
+        print(f"Trace saved to: {trace_path}")
+    if state_path:
+        print(f"State saved to: {state_path}")
+    if report_path or trace_path or state_path:
+        print()
     if result.final_output:
         print(result.final_output)
 

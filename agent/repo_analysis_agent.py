@@ -1,5 +1,7 @@
 """RepoAnalysisAgent —— 仓库深度分析专家。"""
 
+import sys
+
 from handoff import Handoff
 from session import Session
 from tools import ToolRegistry
@@ -65,7 +67,7 @@ def create_repo_analysis_graph(**kwargs):
     from tracing import Tracer
 
     config = kwargs["config"]
-    max_tool_calls = kwargs.get("max_tool_calls", 10)
+    max_tool_calls = kwargs.get("max_tool_calls", 3)
     agent = kwargs["agent"]
     on_tool_start = kwargs.get("on_tool_start")
     on_tool_end = kwargs.get("on_tool_end")
