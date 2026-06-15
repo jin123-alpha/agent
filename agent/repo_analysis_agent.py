@@ -40,7 +40,8 @@ INSTRUCTIONS = """\
 ]
 
 ## 规则
-- 使用 fetch_readme、list_repo_files 工具获取信息（如可用），否则使用 web_search。
+- 优先使用 fetch_readme 获取 README，再使用 extract_features_from_readme 提取项目特性。
+- 如需补充证据，再使用 web_search 获取官方文档、README 之外的公开信息。
 - 客观分析，不要主观推荐。
 - 只返回 JSON 数组，不要多余解释。
 - 分析完成后，将结果交给下一个 Agent。
@@ -160,7 +161,7 @@ def create_repo_analysis_agent(
     next_agent: str = "ScoringAgent",
 ) -> Agent:
     """创建仓库分析 Agent。"""
-    from tools import web_search
+    from tools import extract_features_from_readme, fetch_readme, web_search
 
     from guardrail.output_guardrails import STAGE_OUTPUT_GUARDRAILS
     from .agents import _make_handoff
@@ -168,7 +169,13 @@ def create_repo_analysis_agent(
     return Agent(
         name=AGENT_NAME,
         instructions=INSTRUCTIONS,
-        tools=ToolRegistry(tools=[web_search]),
+        tools=ToolRegistry(
+            tools=[
+                fetch_readme,
+                extract_features_from_readme,
+                web_search,
+            ]
+        ),
         handoffs=[_make_handoff(AGENT_NAME, next_agent)],
         output_guardrails=STAGE_OUTPUT_GUARDRAILS.get(AGENT_NAME, []),
         session=session or Session(),

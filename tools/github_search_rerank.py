@@ -81,16 +81,10 @@ def _call_deepseek_rerank(
         temperature=0,
     )
 
-    print(f"  [rerank] 调用 DeepSeek: model={config.get('model')} base_url={config.get('base_url')}")
-    print(f"  [rerank] prompt 长度: {len(prompt)} 字符")
-    print(f"  [rerank] 候选数: {len(candidates)}")
-
     try:
         response = llm.invoke(prompt)
-        print(f"  [rerank] DeepSeek 响应长度: {len(response.content) if hasattr(response, 'content') else len(str(response))}")
         output_text = response.content if hasattr(response, "content") else str(response)
     except Exception as exc:
-        print(f"  [rerank] DeepSeek 调用失败: {type(exc).__name__}: {exc}")
         logger.error(f"llm_reranking: DeepSeek 调用失败 ({exc})，使用语义检索顺序")
         return candidates
 
@@ -104,11 +98,10 @@ def _call_deepseek_rerank(
         if not isinstance(scored, list):
             logger.warning("llm_reranking: LLM 返回不是数组，回退到原始顺序")
             return candidates
-        print(f"  [rerank] 成功解析 {len(scored)} 个评分")
+        logger.info(f"llm_reranking: parsed {len(scored)} scores")
         return scored
     except json.JSONDecodeError:
-        print(f"  [rerank] JSON 解析失败，原始响应前200字符: {output_text[:200]}")
-        logger.warning("llm_reranking: LLM 返回解析失败，回退到原始顺序")
+        logger.warning(f"llm_reranking: JSON parse failed, response: {output_text[:200]}")
         return candidates
 
 
