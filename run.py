@@ -10,6 +10,8 @@ from runner import (
 
 def main(user_input: str) -> None:
     """Run the default single-agent mode."""
+def main(user_input: str) -> None:
+    """Run the default single-agent mode."""
     config = load_config()
     max_tool_calls = 10
 
@@ -36,14 +38,12 @@ def main(user_input: str) -> None:
 
 def pipeline(user_input: str) -> None:
     """Run the multi-agent GitHub technology selection pipeline."""
+def pipeline(user_input: str) -> None:
+    """Run the multi-agent GitHub technology selection pipeline."""
     config = load_config()
     max_tool_calls = 10
 
-<<<<<<< HEAD
     print(f"\n用户需求：{user_input}\n")
-=======
-    print(f"\n📋 用户需求: {user_input}\n")
->>>>>>> c8d5269 (调试)
     with tool_progress_callbacks() as callbacks:
         if config.get("stream", False):
             events = stream_multi_agent_events(
@@ -63,11 +63,20 @@ def pipeline(user_input: str) -> None:
                 on_tool_end=callbacks["on_tool_end"],
                 on_agent_start=lambda name: print(f"\n当前 Agent：{name}"),
                 on_agent_end=lambda name, _: print(f"Agent 完成：{name}"),
+                on_agent_start=lambda name: print(f"\n当前 Agent：{name}"),
+                on_agent_end=lambda name, _: print(f"Agent 完成：{name}"),
             )
             print_run_result(result)
 
 
 if __name__ == "__main__":
+    demo_input = (
+        "我想做一个本地部署的 RAG 知识库系统，要求支持 PDF 上传、"
+        "向量检索、Ollama、本地模型、Web UI，并且方便二次开发。"
+    )
+    pipeline(demo_input)
+
+    # main(demo_input)
     demo_input = (
         "我想做一个本地部署的 RAG 知识库系统，要求支持 PDF 上传、"
         "向量检索、Ollama、本地模型、Web UI，并且方便二次开发。"
