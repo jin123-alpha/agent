@@ -7,3 +7,5 @@ all-mpnet-base-v2
 AGENTS.md
 .vscode/
 *.json
+data/
+outputs/

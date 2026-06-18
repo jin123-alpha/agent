@@ -6,6 +6,7 @@ from guardrail.output_guardrails import (
     SCORING_OUTPUT_GUARDRAIL,
 )
 from result import RunResult
+from runner.multi_agent_runner import _build_markdown_report
 from tools.scoring_tools import (
     REPORT_SECTIONS,
     SCORE_WEIGHTS,
@@ -96,6 +97,21 @@ class ScoringQualityTests(unittest.TestCase):
         self.assertEqual(result.metadata["scores"], [])
         self.assertEqual(result.metadata["guardrail_warnings"], [])
         self.assertEqual(result.metadata["agent_steps"], [])
+
+    def test_markdown_report_prefers_report_agent_output(self):
+        report = "# 技术选型报告\n\n## 1. 用户需求分析\nLLM generated report"
+
+        result = _build_markdown_report(
+            {"ReportAgent": report},
+            {
+                "requirements": self.requirements,
+                "projects": self.projects,
+                "scores": [],
+                "guardrail_warnings": [],
+            },
+        )
+
+        self.assertEqual(result, report)
 
 
 if __name__ == "__main__":
