@@ -3,10 +3,16 @@
 import json
 import logging
 import re
+from typing import Callable
 
 from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
+
+
+def _noop(_message: str) -> None:
+    """默认空进度回调。"""
+    return None
 
 RERANK_PROMPT = """你是一个 GitHub 仓库搜索精排专家。
 
@@ -134,7 +140,11 @@ def _apply_rerank_scores(
     )
 
 
-def llm_reranking(state: dict, config: dict | None = None) -> dict:
+def llm_reranking(
+    state: dict,
+    config: dict | None = None,
+    report: Callable[[str], None] = _noop,
+) -> dict:
     """
     LangGraph 节点：用 DeepSeek 对 semantic_ranked 的 top-N 精排。
 
@@ -150,7 +160,7 @@ def llm_reranking(state: dict, config: dict | None = None) -> dict:
     semantic_ranked = state.get("semantic_ranked", [])
 
     if not semantic_ranked:
-        logger.warning("llm_reranking: semantic_ranked 为空")
+        logger.debug("llm_reranking: semantic_ranked 为空")
         return {"reranked_candidates": []}
 
     user_query = state.get("user_query", "") or state.get("searchable_query", "")
@@ -159,6 +169,7 @@ def llm_reranking(state: dict, config: dict | None = None) -> dict:
     candidates_for_rerank = semantic_ranked[:rerank_top_n]
 
     try:
+        report(f"正在调用 LLM 精排 {len(candidates_for_rerank)} 个候选项目")
         scored = _call_deepseek_rerank(user_query, candidates_for_rerank, cfg)
         reranked = _apply_rerank_scores(candidates_for_rerank, scored)
 

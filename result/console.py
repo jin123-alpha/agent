@@ -17,6 +17,31 @@ def print_stream_events(events: Iterable[StreamEvent]) -> None:
         elif event.type == "text":
             print(event.content, end="", flush=True)
             printed_text = True
+        elif event.type == "agent_start":
+            print(f"\n\n{'='*60}\n🤖 [{event.agent_name}] 开始执行...\n{'='*60}\n")
+            printed_text = True
+        elif event.type == "agent_output":
+            print(event.content)
+            printed_text = True
+        elif event.type == "tool_start":
+            print(f"\n正在调用工具 {event.tool_name}...")
+            printed_text = True
+        elif event.type == "tool_end":
+            print(f"工具完成：{event.tool_name}")
+            printed_text = True
+        elif event.type == "retry":
+            retry_count = event.data.get("retry_count", "?")
+            print(f"\n🔄 [{event.agent_name}] 第 {retry_count} 次重试：{event.content}")
+            printed_text = True
+        elif event.type == "error":
+            print(f"\n⛔ [{event.agent_name or 'Pipeline'}] {event.content}")
+            printed_text = True
+        elif event.type == "completed":
+            report_path = event.data.get("report_path")
+            print("\n✅ 流水线完成")
+            if report_path:
+                print(f"Report saved to: {report_path}")
+            printed_text = True
 
     if printed_text:
         print()

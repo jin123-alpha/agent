@@ -4,8 +4,21 @@ from typing import Any, Literal
 
 @dataclass
 class StreamEvent:
-    type: Literal["text", "line_break"]
+    type: Literal[
+        "text",
+        "line_break",
+        "agent_start",
+        "agent_output",
+        "tool_start",
+        "tool_end",
+        "retry",
+        "error",
+        "completed",
+    ]
     content: str = ""
+    agent_name: str | None = None
+    tool_name: str | None = None
+    data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

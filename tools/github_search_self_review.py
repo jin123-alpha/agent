@@ -3,10 +3,16 @@
 import json
 import logging
 import re
+from typing import Callable
 
 from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
+
+
+def _noop(_message: str) -> None:
+    """默认空进度回调。"""
+    return None
 
 REVIEW_PROMPT = """你是一个 GitHub 仓库搜索质检员。根据用户的完整需求，严格判断候选仓库是否相关。
 
@@ -95,7 +101,11 @@ def _check_relevance(
         return False, f"parse failed: {output_text[:100]}"
 
 
-def self_review(state: dict, config: dict | None = None) -> dict:
+def self_review(
+    state: dict,
+    config: dict | None = None,
+    report: Callable[[str], None] = _noop,
+) -> dict:
     """
     LangGraph 节点：逐条审核过滤后的候选仓库相关性。
     按精排分从高到低依次检查，不相关的跳过，补足到 top_n 条。
@@ -128,10 +138,15 @@ def self_review(state: dict, config: dict | None = None) -> dict:
         if len(reviewed) >= top_n:
             break
 
+        full_name = repo.get("full_name", "N/A")
+        report(
+            f"正在审核相关性 · 已通过 {len(reviewed)}/{top_n} · 检查 {full_name}"
+        )
+
         # 1. 硬规则预检
         pre_ok, pre_reason = _hard_precheck(repo, req)
         if not pre_ok:
-            skipped.append(f"{repo.get('full_name', 'N/A')}: {pre_reason} [预检]")
+            skipped.append(f"{full_name}: {pre_reason} [预检]")
             logger.info(f"self_review precheck fail [{i+1}]: {repo.get('full_name')} — {pre_reason}")
             continue
 
@@ -141,12 +156,13 @@ def self_review(state: dict, config: dict | None = None) -> dict:
         if relevant:
             reviewed.append(repo)
         else:
-            skipped.append(f"{repo.get('full_name', 'N/A')}: {reason}")
+            skipped.append(f"{full_name}: {reason}")
 
-    print(f"  [self_review] 审核 {min(len(reviewed) + len(skipped), len(candidates))} 条, "
-          f"通过 {len(reviewed)}, 跳过 {len(skipped)}")
-    if skipped:
-        for s in skipped:
-            print(f"    ✗ {s}")
+    logger.debug(
+        "self_review completed: reviewed=%d, passed=%d, skipped=%d",
+        min(len(reviewed) + len(skipped), len(candidates)),
+        len(reviewed),
+        len(skipped),
+    )
 
     return {"reviewed_candidates": reviewed}
