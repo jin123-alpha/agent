@@ -1,11 +1,21 @@
 """threshold_filtering 节点：过滤低 star + 低精排分的仓库。"""
 
 import logging
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 
-def threshold_filtering(state: dict, config: dict | None = None) -> dict:
+def _noop(_message: str) -> None:
+    """默认空进度回调。"""
+    return None
+
+
+def threshold_filtering(
+    state: dict,
+    config: dict | None = None,
+    report: Callable[[str], None] = _noop,
+) -> dict:
     """
     LangGraph 节点：过滤同时满足「低星数」且「低精排分」的仓库。
 
@@ -24,7 +34,7 @@ def threshold_filtering(state: dict, config: dict | None = None) -> dict:
 
     reranked = state.get("reranked_candidates", [])
     if not reranked:
-        logger.warning("threshold_filtering: reranked_candidates 为空")
+        logger.debug("threshold_filtering: reranked_candidates 为空")
         return {"filtered_candidates": []}
 
     filtered: list[dict] = []

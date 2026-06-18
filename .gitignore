@@ -9,3 +9,5 @@ AGENTS.md
 *.json
 data/
 outputs/
+reports/
+CLAUDE.md

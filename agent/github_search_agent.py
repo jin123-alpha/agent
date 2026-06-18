@@ -7,7 +7,6 @@ DAG 流水线:
 
 import json
 import logging
-import time
 
 from handoff import Handoff
 from session import Session
@@ -58,7 +57,17 @@ def _create_dag_graph(**kwargs):
     Annotated = deps["Annotated"]
     TypedDict = deps["TypedDict"]
 
-    config_from_runner = kwargs.get("config", {})
+    runtime_config = kwargs.get("config", {})
+    on_status = runtime_config.get("_runtime_status_callback")
+    config_from_runner = {
+        key: value
+        for key, value in runtime_config.items()
+        if key != "_runtime_status_callback"
+    }
+
+    def report_status(message: str) -> None:
+        if callable(on_status):
+            on_status(message)
 
     # ── State 定义 ──────────────────────────────────────────────
     class AgentState(TypedDict):
@@ -85,76 +94,58 @@ def _create_dag_graph(**kwargs):
     # ── 包装器：将 config 冻结到 state 中供下游节点读取 ──────────
 
     def _convert_query(state: AgentState) -> dict:
-        t0 = time.time()
-        print("[DAG:1/6 convert_query] 开始解析输入...")
+        report_status("正在解析搜索需求")
         result = convert_query(state, config_from_runner)
         result["_dag_config"] = config_from_runner
-        sq = result.get("searchable_query", "")
-        print(f"[DAG:1/6 convert_query] searchable_query = '{sq}'")
-        print(f"[DAG:1/6 convert_query] ⏱ {time.time() - t0:.2f}s")
+        logger.debug(
+            "convert_query completed: %s",
+            result.get("searchable_query", ""),
+        )
         return result
 
     def _ingest_github_repos(state: AgentState) -> dict:
-        t0 = time.time()
-        print("[DAG:2/6 ingest_github_repos] 开始搜索 GitHub...")
+        report_status("正在搜索 GitHub 并抓取仓库文档")
         cfg = state.get("_dag_config", config_from_runner)
-        sq = state.get("searchable_query", "")
-        print(f"[DAG:2/6 ingest_github_repos] 查询: '{sq}'")
-        print(f"[DAG:2/6 ingest_github_repos] github_api_key: {'已配置' if cfg.get('github_api_key') else '未配置!!!'}")
-        result = ingest_github_repos(state, cfg)
+        result = ingest_github_repos(state, cfg, report=report_status)
         repos = result.get("repositories", [])
-        print(f"[DAG:2/6 ingest_github_repos] 获取到 {len(repos)} 个仓库")
-        if repos:
-            print(f"[DAG:2/6 ingest_github_repos] 第一个: {repos[0].get('full_name', 'N/A')} (stars={repos[0].get('stars',0)})")
-        print(f"[DAG:2/6 ingest_github_repos] ⏱ {time.time() - t0:.2f}s")
+        logger.debug("ingest_github_repos completed: %d repositories", len(repos))
         return result
 
     def _dense_retrieval(state: AgentState) -> dict:
-        t0 = time.time()
-        n = len(state.get("repositories", []))
-        print(f"[DAG:3/6 dense_retrieval] 输入 {n} 个仓库，开始语义检索...")
+        report_status("正在进行向量检索与 BM25 语义排序")
         cfg = state.get("_dag_config", config_from_runner)
-        result = dense_retrieval(state, cfg)
+        result = dense_retrieval(state, cfg, report=report_status)
         ranked = result.get("semantic_ranked", [])
-        print(f"[DAG:3/6 dense_retrieval] 排序完成，输出 {len(ranked)} 个候选")
-        print(f"[DAG:3/6 dense_retrieval] ⏱ {time.time() - t0:.2f}s")
+        logger.debug("dense_retrieval completed: %d candidates", len(ranked))
         return result
 
     def _llm_reranking(state: AgentState) -> dict:
-        t0 = time.time()
-        n = len(state.get("semantic_ranked", []))
-        print(f"[DAG:4/6 llm_reranking] 输入 {n} 个候选，开始 LLM 精排...")
+        report_status("正在使用 LLM 精排候选项目")
         cfg = state.get("_dag_config", config_from_runner)
-        result = llm_reranking(state, cfg)
+        result = llm_reranking(state, cfg, report=report_status)
         reranked = result.get("reranked_candidates", [])
-        print(f"[DAG:4/6 llm_reranking] 精排完成，输出 {len(reranked)} 个候选")
-        print(f"[DAG:4/6 llm_reranking] ⏱ {time.time() - t0:.2f}s")
+        logger.debug("llm_reranking completed: %d candidates", len(reranked))
         return result
 
     def _threshold_filtering(state: AgentState) -> dict:
-        t0 = time.time()
-        n = len(state.get("reranked_candidates", []))
-        print(f"[DAG:5/6 threshold_filtering] 输入 {n} 个候选，开始过滤...")
+        report_status("正在按质量阈值过滤候选项目")
         cfg = state.get("_dag_config", config_from_runner)
-        result = threshold_filtering(state, cfg)
+        result = threshold_filtering(state, cfg, report=report_status)
         filtered = result.get("filtered_candidates", [])
-        print(f"[DAG:5/6 threshold_filtering] 过滤后剩余 {len(filtered)} 个候选")
-        print(f"[DAG:5/6 threshold_filtering] ⏱ {time.time() - t0:.2f}s")
+        logger.debug("threshold_filtering completed: %d candidates", len(filtered))
         return result
 
     def _self_review(state: AgentState) -> dict:
-        t0 = time.time()
-        n = len(state.get("filtered_candidates", []))
-        print(f"[DAG:6/6 self_review] 输入 {n} 个候选，开始逐条审核相关性...")
+        report_status("正在审核候选项目相关性")
         cfg = state.get("_dag_config", config_from_runner)
-        result = self_review(state, cfg)
+        result = self_review(state, cfg, report=report_status)
         reviewed = result.get("reviewed_candidates", [])
-        print(f"[DAG:6/6 self_review] 审核通过 {len(reviewed)} 个候选")
-        print(f"[DAG:6/6 self_review] ⏱ {time.time() - t0:.2f}s")
+        logger.debug("self_review completed: %d candidates", len(reviewed))
         return result
 
     # ── finalize 节点：输出 JSON → AIMessage ─────────────────────
     def _finalize(state: AgentState) -> dict:
+        report_status("正在整理 GitHub 搜索结果")
         filtered = state.get("reviewed_candidates", []) or state.get("filtered_candidates", [])
         user_query = state.get("user_query", "") or state.get("searchable_query", "")
 
@@ -187,9 +178,7 @@ def _create_dag_graph(**kwargs):
             )
 
         output_json = json.dumps(output, ensure_ascii=False)
-        print(f"[DAG:finalize] 输出 top_{top_n}，共 {len(output)} 个仓库")
-        for r in output:
-            print(f"  - {r['full_name']} (stars={r['stars']}, lang={r['language']})")
+        logger.debug("finalize completed: top_%d, %d repositories", top_n, len(output))
 
         return {
             "messages": [AIMessage(content=output_json)],

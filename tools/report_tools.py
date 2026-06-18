@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -213,8 +215,31 @@ def generate_report(
     )
 
 
-def save_markdown_report(markdown: str, run_id: str) -> str:
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORT_DIR / f"{run_id}.md"
+def save_markdown_report(
+    markdown: str,
+    run_id: str,
+    output_dir: str | Path | None = None,
+    project_type: str | None = None,
+) -> str:
+    report_dir = Path(output_dir).expanduser().resolve() if output_dir else REPORT_DIR
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    name = unicodedata.normalize("NFKC", str(project_type or "")).strip()
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if not name or name.upper() in {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }:
+        name = "技术选型报告"
+    name = name[:80].rstrip(" .")
+
+    path = report_dir / f"{name}.md"
+    suffix = 2
+    while path.exists():
+        path = report_dir / f"{name}_{suffix}.md"
+        suffix += 1
+
     path.write_text(markdown, encoding="utf-8")
-    return str(path)
+    return str(path.resolve())

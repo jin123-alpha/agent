@@ -1,10 +1,17 @@
 """dense_retrieval 节点：SentenceTransformer + BM25 混合语义检索。"""
 
 import logging
+from typing import Callable
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _noop(_message: str) -> None:
+    """默认空进度回调。"""
+    return None
+
 
 # 全局缓存的模型实例（懒加载）
 _sem_model = None
@@ -17,6 +24,15 @@ def _get_sem_model():
         from pathlib import Path
 
         from sentence_transformers import SentenceTransformer
+        from transformers.utils import logging as transformers_logging
+
+        transformers_logging.disable_progress_bar()
+        try:
+            from huggingface_hub.utils import disable_progress_bars
+
+            disable_progress_bars()
+        except ImportError:
+            pass
 
         # 优先使用本地下载的模型，否则从 HF 拉取
         local_path = Path(__file__).resolve().parents[1] / "all-mpnet-base-v2"
@@ -84,7 +100,11 @@ def _min_max_norm(values: np.ndarray) -> np.ndarray:
     return (values - v_min) / (v_max - v_min)
 
 
-def dense_retrieval(state: dict, config: dict | None = None) -> dict:
+def dense_retrieval(
+    state: dict,
+    config: dict | None = None,
+    report: Callable[[str], None] = _noop,
+) -> dict:
     """
     LangGraph 节点：混合语义检索 (SentenceTransformer + BM25)。
 
@@ -101,7 +121,7 @@ def dense_retrieval(state: dict, config: dict | None = None) -> dict:
 
     repos = state.get("repositories", [])
     if not repos:
-        logger.warning("dense_retrieval: 没有仓库数据")
+        logger.debug("dense_retrieval: 没有仓库数据")
         return {"semantic_ranked": []}
 
     # 截断文档到 1000 字符（减少编码量）
@@ -113,11 +133,12 @@ def dense_retrieval(state: dict, config: dict | None = None) -> dict:
     user_query = state.get("user_query", "") or state.get("searchable_query", "")
 
     if not user_query.strip():
-        logger.warning("dense_retrieval: user_query 为空，跳过语义检索")
+        logger.debug("dense_retrieval: user_query 为空，跳过语义检索")
         state["semantic_ranked"] = repos
         return {"semantic_ranked": repos}
 
     try:
+        report(f"正在用向量模型编码 {len(docs)} 个仓库文档")
         dense_scores = _compute_dense_scores(user_query, docs)
         norm_dense = _min_max_norm(dense_scores)
     except Exception as exc:
@@ -125,6 +146,7 @@ def dense_retrieval(state: dict, config: dict | None = None) -> dict:
         norm_dense = np.zeros(len(docs))
 
     try:
+        report("正在计算 BM25 关键词相关度")
         bm25_scores = _compute_bm25_scores(user_query, docs)
         norm_bm25 = _min_max_norm(bm25_scores)
     except Exception as exc:
