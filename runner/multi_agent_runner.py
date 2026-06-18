@@ -27,6 +27,7 @@ from .runner import build_initial_state, check_guardrails, create_agent_graph
 from tools.report_tools import generate_report, save_markdown_report
 
 ToolCallback = Callable[[str], None]
+StatusCallback = Callable[[str], None]
 MAX_GUARDRAIL_RETRIES = 2
 MAX_CRITIC_FORMAT_RETRIES = 2
 
@@ -241,11 +242,18 @@ def _build_markdown_report(context_data: dict[str, Any], metadata: dict[str, Any
     )
 
 
-def _finalize_result(result: RunResult, tracer: Tracer, save_report: bool = False) -> RunResult:
+def _finalize_result(
+    result: RunResult,
+    tracer: Tracer,
+    save_report: bool = False,
+    report_output_dir: str | None = None,
+) -> RunResult:
     if save_report and result.final_output.strip():
         result.metadata["report_path"] = save_markdown_report(
             result.final_output,
             tracer.run_id,
+            report_output_dir,
+            result.metadata.get("requirements", {}).get("project_type"),
         )
     result.metadata["run_id"] = tracer.run_id
     result.metadata["trace_path"] = tracer.save()
@@ -460,6 +468,7 @@ def run_multi_agent_pipeline(
     on_tool_end: ToolCallback | None = None,
     on_agent_start: Callable[[str], None] | None = None,
     on_agent_end: Callable[[str, str], None] | None = None,
+    report_output_dir: str | None = None,
 ) -> RunResult:
     """
     分层审查流水线：
@@ -796,6 +805,7 @@ def run_multi_agent_pipeline(
         RunResult(final_output=final_output, metadata=metadata),
         tracer,
         save_report=True,
+        report_output_dir=report_output_dir,
     )
 
 
@@ -811,38 +821,71 @@ def stream_multi_agent_events(
     agents: dict[str, Agent] | None = None,
     on_tool_start: ToolCallback | None = None,
     on_tool_end: ToolCallback | None = None,
+    on_status: StatusCallback | None = None,
+    report_output_dir: str | None = None,
+    save_debug_artifacts: bool = False,
 ):
     """流式流水线，含 OutputGuardrail + Critic 分层重试。"""
-    config = config or load_config()
+    config = dict(config or load_config())
+    config["_runtime_status_callback"] = on_status
     agents = agents or create_all_agents()
 
     context_data: dict[str, Any] = {}
+    pipeline_trace: list[dict[str, Any]] = []
     retry_counts: dict[str, int] = {}
     guardrail_retry_counts: dict[str, int] = {}
     critic_format_retry_counts: dict[str, int] = {}
+    tracer = Tracer()
+    for agent in agents.values():
+        agent.tracer = tracer
+
+    pending_tool_events: list[StreamEvent] = []
+
+    def traced_tool_start(tool_name: str) -> None:
+        tracer.record("tool_start", tool_name=tool_name)
+        pending_tool_events.append(
+            StreamEvent(type="tool_start", tool_name=tool_name)
+        )
+        if on_tool_start:
+            on_tool_start(tool_name)
+
+    def traced_tool_end(tool_name: str) -> None:
+        tracer.record("tool_end", tool_name=tool_name)
+        pending_tool_events.append(
+            StreamEvent(type="tool_end", tool_name=tool_name)
+        )
+        if on_tool_end:
+            on_tool_end(tool_name)
 
     i = 0
     while i < len(AGENT_PIPELINE):
         agent_name = AGENT_PIPELINE[i]
         agent = agents[agent_name]
 
-        yield StreamEvent(
-            type="text",
-            content=f"\n\n{'='*60}\n🤖 [{agent_name}] 开始执行...\n{'='*60}\n\n",
-        )
+        yield StreamEvent(type="agent_start", agent_name=agent_name)
 
         blocked = check_guardrails(agent, user_input)
         if blocked:
-            yield StreamEvent(type="text", content=f"⛔ 被 Guardrail 阻断: {blocked}")
+            yield StreamEvent(
+                type="error",
+                agent_name=agent_name,
+                content=f"被 Guardrail 阻断: {blocked}",
+            )
             return
 
         prompt = _inject_context(user_input, context_data)
 
         agent_output = _run_single_agent(
-            agent, prompt, config, max_tool_calls, on_tool_start, on_tool_end
+            agent, prompt, config, max_tool_calls, traced_tool_start, traced_tool_end
         )
 
-        yield StreamEvent(type="text", content=agent_output)
+        yield from pending_tool_events
+        pending_tool_events.clear()
+        yield StreamEvent(
+            type="agent_output",
+            agent_name=agent_name,
+            content=agent_output,
+        )
 
         if _is_critic(agent_name):
             reviewed_stage = _get_reviewed_stage(agent_name)
@@ -852,10 +895,11 @@ def stream_multi_agent_events(
                 current_format_retries = critic_format_retry_counts.get(agent_name, 0)
                 if current_format_retries >= MAX_CRITIC_FORMAT_RETRIES:
                     yield StreamEvent(
-                        type="text",
+                        type="error",
+                        agent_name=agent_name,
                         content=(
-                            f"\n⚠️ Critic 输出格式无效，且达到最大重试次数 "
-                            f"({MAX_CRITIC_FORMAT_RETRIES})，流水线停止。\n"
+                            "Critic 输出格式无效，且达到最大重试次数 "
+                            f"({MAX_CRITIC_FORMAT_RETRIES})，流水线停止。"
                         ),
                     )
                     return
@@ -868,11 +912,13 @@ def stream_multi_agent_events(
                 context_data[f"{agent_name}_format_feedback"] = feedback
 
                 yield StreamEvent(
-                    type="text",
-                    content=(
-                        f"\n🧪 Critic 输出格式无效，"
-                        f"触发第 {critic_format_retry_counts[agent_name]} 次 Critic 重试...\n"
-                    ),
+                    type="retry",
+                    agent_name=agent_name,
+                    content="Critic 输出格式无效",
+                    data={
+                        "source": "critic_format",
+                        "retry_count": critic_format_retry_counts[agent_name],
+                    },
                 )
 
                 retry_prompt = _inject_retry_context(
@@ -888,11 +934,17 @@ def stream_multi_agent_events(
                     retry_prompt,
                     config,
                     max_tool_calls,
-                    on_tool_start,
-                    on_tool_end,
+                    traced_tool_start,
+                    traced_tool_end,
                 )
 
-                yield StreamEvent(type="text", content=agent_output)
+                yield from pending_tool_events
+                pending_tool_events.clear()
+                yield StreamEvent(
+                    type="agent_output",
+                    agent_name=agent_name,
+                    content=agent_output,
+                )
                 critic_result = _parse_critic_result(agent_output)
 
             context_data.pop(f"{agent_name}_format_feedback", None)
@@ -912,8 +964,13 @@ def stream_multi_agent_events(
                     context_data[feedback_key] = feedback
 
                     yield StreamEvent(
-                        type="text",
-                        content=f"\n🔄 Critic 审查未通过，触发第 {retry_counts[reviewed_stage]} 次重试...\n",
+                        type="retry",
+                        agent_name=reviewed_stage,
+                        content="Critic 语义审查未通过",
+                        data={
+                            "source": "critic",
+                            "retry_count": retry_counts[reviewed_stage],
+                        },
                     )
 
                     retry_prompt = _inject_retry_context(
@@ -925,9 +982,15 @@ def stream_multi_agent_events(
                     reviewed_agent = agents[reviewed_stage]
                     retry_output = _run_single_agent(
                         reviewed_agent, retry_prompt, config,
-                        max_tool_calls, on_tool_start, on_tool_end,
+                        max_tool_calls, traced_tool_start, traced_tool_end,
                     )
-                    yield StreamEvent(type="text", content=retry_output)
+                    yield from pending_tool_events
+                    pending_tool_events.clear()
+                    yield StreamEvent(
+                        type="agent_output",
+                        agent_name=reviewed_stage,
+                        content=retry_output,
+                    )
 
                     guardrail_retry_counts.pop(reviewed_stage, None)
                     while True:
@@ -942,22 +1005,24 @@ def stream_multi_agent_events(
                         gr_retries = guardrail_retry_counts.get(reviewed_stage, 0)
                         if gr_retries >= MAX_GUARDRAIL_RETRIES:
                             yield StreamEvent(
-                                type="text",
+                                type="error",
+                                agent_name=reviewed_stage,
                                 content=(
-                                    f"\n⚠️ OutputGuardrail 未通过，且达到最大重试次数 "
-                                    f"({MAX_GUARDRAIL_RETRIES})，流水线停止。\n"
+                                    "OutputGuardrail 未通过，且达到最大重试次数 "
+                                    f"({MAX_GUARDRAIL_RETRIES})，流水线停止。"
                                 ),
                             )
                             return
 
                         guardrail_retry_counts[reviewed_stage] = gr_retries + 1
                         yield StreamEvent(
-                            type="text",
-                            content=(
-                                f"\n🛡️ Critic 重试输出未通过 OutputGuardrail: "
-                                f"{guardrail_result.message}\n"
-                                f"🔄 触发规则层第 {guardrail_retry_counts[reviewed_stage]} 次重试...\n"
-                            ),
+                            type="retry",
+                            agent_name=reviewed_stage,
+                            content=guardrail_result.message,
+                            data={
+                                "source": "output_guardrail",
+                                "retry_count": guardrail_retry_counts[reviewed_stage],
+                            },
                         )
 
                         retry_prompt = _inject_retry_context(
@@ -973,19 +1038,26 @@ def stream_multi_agent_events(
                             retry_prompt,
                             config,
                             max_tool_calls,
-                            on_tool_start,
-                            on_tool_end,
+                            traced_tool_start,
+                            traced_tool_end,
                         )
 
-                        yield StreamEvent(type="text", content=retry_output)
+                        yield from pending_tool_events
+                        pending_tool_events.clear()
+                        yield StreamEvent(
+                            type="agent_output",
+                            agent_name=reviewed_stage,
+                            content=retry_output,
+                        )
 
                     context_data[reviewed_stage] = retry_output
 
                     continue
                 else:
                     yield StreamEvent(
-                        type="text",
-                        content=f"\n⚠️ Critic 审查未通过，且达到最大重试次数 ({max_retries})，流水线停止。\n",
+                        type="error",
+                        agent_name=agent_name,
+                        content=f"Critic 审查未通过，且达到最大重试次数 ({max_retries})，流水线停止。",
                     )
                     return
 
@@ -1004,19 +1076,22 @@ def stream_multi_agent_events(
 
                 if gr_retries >= MAX_GUARDRAIL_RETRIES:
                     yield StreamEvent(
-                        type="text",
-                        content=f"\n⚠️ OutputGuardrail 达到最大重试次数，流水线停止\n",
+                        type="error",
+                        agent_name=agent_name,
+                        content="OutputGuardrail 达到最大重试次数，流水线停止",
                     )
                     return
 
                 guardrail_retry_counts[agent_name] = gr_retries + 1
 
                 yield StreamEvent(
-                    type="text",
-                    content=(
-                        f"\n🛡️ OutputGuardrail 未通过: {guardrail_result.message}\n"
-                        f"🔄 触发规则层第 {guardrail_retry_counts[agent_name]} 次重试...\n"
-                    ),
+                    type="retry",
+                    agent_name=agent_name,
+                    content=guardrail_result.message,
+                    data={
+                        "source": "output_guardrail",
+                        "retry_count": guardrail_retry_counts[agent_name],
+                    },
                 )
 
                 retry_prompt = _inject_retry_context(
@@ -1027,16 +1102,52 @@ def stream_multi_agent_events(
 
                 agent_output = _run_single_agent(
                     agent, retry_prompt, config,
-                    max_tool_calls, on_tool_start, on_tool_end,
+                    max_tool_calls, traced_tool_start, traced_tool_end,
                 )
 
-                yield StreamEvent(type="text", content=agent_output)
+                yield from pending_tool_events
+                pending_tool_events.clear()
+                yield StreamEvent(
+                    type="agent_output",
+                    agent_name=agent_name,
+                    content=agent_output,
+                )
 
             context_data[agent_name] = agent_output
 
-        yield StreamEvent(
-            type="text",
-            content=f"\n✅ [{agent_name}] 完成\n",
-        )
+        pipeline_trace.append({
+            "agent": agent_name,
+            "status": "completed",
+            "output_length": len(agent_output),
+        })
 
         i += 1
+
+    from agent.agents import AGENT_REPORT
+
+    metadata = _result_metadata(
+        context_data,
+        pipeline_trace,
+        retry_counts=retry_counts,
+        guardrail_retry_counts=guardrail_retry_counts,
+        critic_format_retry_counts=critic_format_retry_counts,
+    )
+    final_output = _build_markdown_report(context_data, metadata)
+    context_data[AGENT_REPORT] = final_output
+    metadata["agent_outputs"] = context_data
+    metadata["run_id"] = tracer.run_id
+    metadata["report_path"] = save_markdown_report(
+        final_output,
+        tracer.run_id,
+        report_output_dir,
+        metadata.get("requirements", {}).get("project_type"),
+    )
+    if save_debug_artifacts:
+        metadata["trace_path"] = tracer.save()
+        metadata["state_path"] = tracer.save_states()
+
+    yield StreamEvent(
+        type="completed",
+        content=final_output,
+        data=metadata,
+    )

@@ -20,14 +20,19 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config() -> dict:
+def load_config(config_path: str | Path | None = None) -> dict:
+    path = Path(config_path).expanduser().resolve() if config_path else CONFIG_PATH
     try:
-        with CONFIG_PATH.open("r", encoding="utf-8") as file:
+        with path.open("r", encoding="utf-8") as file:
             config = json.load(file)
-    except Exception:
+    except Exception as exc:
+        if config_path is not None:
+            raise ValueError(f"无法读取配置文件 {path}: {exc}") from exc
         return DEFAULT_CONFIG.copy()
 
     if not isinstance(config, dict):
+        if config_path is not None:
+            raise ValueError(f"配置文件必须包含 JSON 对象: {path}")
         return DEFAULT_CONFIG.copy()
 
     loaded_config = DEFAULT_CONFIG.copy()

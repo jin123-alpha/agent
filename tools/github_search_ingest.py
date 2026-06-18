@@ -5,10 +5,16 @@ import base64
 import logging
 import os
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _noop(_message: str) -> None:
+    """默认空进度回调。"""
+    return None
 
 # 抑制 httpx 的 HTTP 请求日志
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -150,6 +156,8 @@ async def _fetch_github_repositories(
     max_results: int,
     per_page: int,
     headers: dict,
+    progress: dict | None = None,
+    report: Callable[[str], None] = _noop,
 ) -> list[dict]:
     """调用 GitHub Search API 搜索仓库列表。"""
     url = "https://api.github.com/search/repositories"
@@ -205,13 +213,21 @@ async def _fetch_github_repositories(
                     break
 
                 # 并发抓取每个仓库的文档
+                async def _fetch_with_progress(full_name: str) -> str:
+                    doc = await _fetch_repo_documentation(full_name, headers, client)
+                    if progress is not None:
+                        progress["done"] += 1
+                        report(
+                            f"正在抓取仓库文档 {progress['done']}/{progress['total']}"
+                            f" · {full_name}"
+                        )
+                    return doc
+
                 tasks = []
                 for repo in items:
                     full_name = repo.get("full_name", "")
                     tasks.append(
-                        asyncio.create_task(
-                            _fetch_repo_documentation(full_name, headers, client)
-                        )
+                        asyncio.create_task(_fetch_with_progress(full_name))
                     )
                 docs = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -238,7 +254,7 @@ async def _fetch_github_repositories(
                         }
                     )
             except Exception as exc:
-                logger.error(
+                logger.debug(
                     f"fetch_github_repositories page {page}: {type(exc).__name__}: {exc}"
                 )
                 break
@@ -247,7 +263,11 @@ async def _fetch_github_repositories(
     return repos
 
 
-async def _ingest_github_repos_async(state: dict, config: dict | None = None) -> dict:
+async def _ingest_github_repos_async(
+    state: dict,
+    config: dict | None = None,
+    report: Callable[[str], None] = _noop,
+) -> dict:
     """异步核心：按冒号分隔关键词，每个词单独搜索后去重合并。"""
     cfg = config or {}
     searchable_query = state.get("searchable_query", "")
@@ -274,6 +294,10 @@ async def _ingest_github_repos_async(state: dict, config: dict | None = None) ->
         keywords = searchable_query.split(":")
         keywords = [p.strip() for p in keywords if p.strip()]
 
+    report(f"正在搜索 {len(keywords)} 个关键词：{('、'.join(keywords))[:60]}")
+
+    # 共享进度计数器（跨并发的关键词搜索累计已抓取文档数）
+    progress = {"done": 0, "total": 0}
 
     # 并发搜索每个关键词
     tasks = []
@@ -281,7 +305,9 @@ async def _ingest_github_repos_async(state: dict, config: dict | None = None) ->
         query = f"{kw} {target_language}".strip() if target_language else kw
         tasks.append(
             asyncio.create_task(
-                _fetch_github_repositories(query, max_results, per_page, headers)
+                _fetch_github_repositories(
+                    query, max_results, per_page, headers, progress, report
+                )
             )
         )
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -314,13 +340,17 @@ async def _ingest_github_repos_async(state: dict, config: dict | None = None) ->
     }
 
 
-def ingest_github_repos(state: dict, config: dict | None = None) -> dict:
+def ingest_github_repos(
+    state: dict,
+    config: dict | None = None,
+    report: Callable[[str], None] = _noop,
+) -> dict:
     """LangGraph 节点入口（同步包装）。"""
     try:
-        return asyncio.run(_ingest_github_repos_async(state, config))
+        return asyncio.run(_ingest_github_repos_async(state, config, report))
     except RuntimeError:
         # 已有 event loop 的情况（LangGraph 可能已有）
         import nest_asyncio
 
         nest_asyncio.apply()
-        return asyncio.run(_ingest_github_repos_async(state, config))
+        return asyncio.run(_ingest_github_repos_async(state, config, report))

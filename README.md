@@ -281,6 +281,46 @@ python test.py --agent GitHubSearchAgent --critic
 
 如果 `config.json` 不存在、JSON 格式错误，或读取失败，程序会自动使用默认配置。
 
+## 持续会话 CLI
+
+安装依赖后，可以通过课程演示用 CLI 连续执行技术选型任务：
+
+```powershell
+python cli.py
+```
+
+也可以直接传入需求：
+
+```powershell
+python cli.py "需要一个支持 PDF、Ollama 和 Web UI 的本地 RAG 系统"
+```
+
+CLI 启动后会清屏并显示对话式输入框。每个 Agent 工作时展示
+`AgentName loading...` 动画，完成后以摘要表格或自然语言展示结果，
+不会直接打印原始 JSON 或完整 Markdown。全屏终端界面的输入框固定在
+最底部，历史输出在上方独立滚动；可使用鼠标滚轮或 `PageUp` / `PageDown`
+查看历史，`Home` / `End` 跳转到开头或最新内容，`Ctrl+↑` / `Ctrl+↓`
+逐行滚动。输入框位置不会移动。Agent 运行期间输入框保持可见但处于锁定
+状态；任务完成后输入框恢复，可以继续提交下一个任务。按 `Ctrl+C` 结束会话。
+
+最终报告默认保存到启动目录下的
+`reports/{project_type}.md`，同名报告自动追加 `_2`、`_3`，不会覆盖旧文件。
+
+常用参数：
+
+```powershell
+python cli.py `
+  --config .\config.json `
+  --output-dir .\reports `
+  --max-tool-calls 10 `
+  --debug-artifacts `
+  "需要一个方便二次开发的 Python Agent 框架"
+```
+
+- `--config`：指定配置文件；文件不存在或 JSON 无效时直接报错。
+- `--output-dir`：指定报告目录，默认是当前启动目录下的 `reports/`。
+- `--debug-artifacts`：额外保存 Trace 和 LangGraph State；默认只展示报告路径。
+
 ## 下载语义检索模型
 
 GitHubSearchAgent 使用 `sentence-transformers/all-mpnet-base-v2` 做语义向量检索。模型约 1.7GB，需要离线下载到项目根目录。
@@ -452,7 +492,7 @@ generate_report(requirements, projects, analysed_projects, scores, guardrail_war
 成功执行 `run_multi_agent_pipeline` 后，报告会保存到：
 
 ```text
-data/reports/{run_id}.md
+data/reports/{project_type}.md
 ```
 
 终端也会打印报告路径和 Markdown 内容。
