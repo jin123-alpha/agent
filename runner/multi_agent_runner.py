@@ -224,6 +224,10 @@ def _result_metadata(
 
 
 def _build_markdown_report(context_data: dict[str, Any], metadata: dict[str, Any]) -> str:
+    report_output = context_data.get("ReportAgent")
+    if isinstance(report_output, str) and report_output.strip():
+        return report_output.strip()
+
     analysed_projects = _parse_json_output(
         context_data.get("RepoAnalysisAgent", ""),
         [],
